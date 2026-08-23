@@ -2,6 +2,13 @@
 
 All notable changes are recorded here. The project follows Semantic Versioning.
 
+## Unreleased
+
+- Bounded repeated literal and regular expression matching before collecting findings.
+- Preserved raw evidence spans when artifact text contains astral Unicode characters.
+- Rejected unsupported compressed sitemaps when a sitemap is required.
+- Aligned file-rule message validation with the published policy schema.
+
 ## 0.1.1 - 2026-08-24
 
 - Fixed nested XML entities being decoded more than once during sitemap parsing.

@@ -20,4 +20,4 @@ The Next.js adapter supports produced Pages Router and App Router manifests with
 
 Unknown manifest fields are ignored. Framework releases can change private build formats, so every supported shape has synthetic tests. Report a minimal synthetic fixture when a maintained Next.js release produces a different shape.
 
-Compressed sitemaps and archives are not expanded in 0.1.0.
+Compressed sitemaps and archives are not expanded. A compressed sitemap does not satisfy a required sitemap policy.

@@ -146,6 +146,11 @@ function validateFileRule(value: unknown, path: string): FileRule {
       path,
     });
   }
+  if (item.message !== undefined && typeof item.message !== 'string') {
+    throw new SurfaceGuardError('SG_CONFIG_INVALID', `${path}.message must be a string`, {
+      path,
+    });
+  }
   return item as unknown as FileRule;
 }
 
