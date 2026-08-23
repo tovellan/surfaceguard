@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       confirm:
-        description: Create a public GitHub release and attach the package tarball
+        description: Create a repository release and attach the package tarball
         required: true
         default: false
         type: boolean
