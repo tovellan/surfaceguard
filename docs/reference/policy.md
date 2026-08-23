@@ -101,7 +101,7 @@ File rules apply before text classification, so they also cover binary and other
 - Sitemap paths disallowed by robots rules are always reported when sitemap checks run.
 - Sitemap paths missing from route manifests are warnings.
 
-Compressed sitemaps are not expanded in version 0.1.0.
+Compressed sitemaps are not expanded. A compressed sitemap does not satisfy `mode: required`.
 
 ## Limits
 

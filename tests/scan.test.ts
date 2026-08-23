@@ -85,7 +85,7 @@ describe('artifact scanning', () => {
     ).rejects.toMatchObject({
       code: 'SG_ROOT_INVALID',
     });
-    await writeFile(join(root, 'large.js'), '0123456789', 'utf8');
+    await writeFile(join(root, 'large.bin'), '0123456789', 'utf8');
     await expect(
       scanArtifacts({
         root,
@@ -132,6 +132,96 @@ describe('artifact scanning', () => {
     expect(result.failed).toBe(false);
   });
 
+  it.each(['literal', 'regex'] as const)(
+    'bounds repeated %s matches before allocating the complete match set',
+    async (match) => {
+      const root = await mkdtemp(join(tmpdir(), 'surfaceguard-findings-'));
+      temporary.push(root);
+      await writeFile(join(root, 'bundle.js'), 'a'.repeat(256 * 1024), 'utf8');
+      const result = await scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          limits: { maxFindings: 7 },
+          forbidden: { text: [{ id: 'repeated-text', pattern: 'a', match }] },
+        },
+      });
+      expect(result.findings).toHaveLength(7);
+    },
+  );
+
+  it('preserves evidence spans after astral Unicode characters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-unicode-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '😀INTERNAL_ONLY', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    const finding = result.findings.find((item) => item.ruleId === 'private-copy');
+    expect(finding).toMatchObject({ ruleId: 'private-copy', evidence: 'INTERNAL_ONLY' });
+    expect(finding?.location?.offset).toBe(2);
+  });
+
+  it('keeps case-insensitive literal evidence aligned after Unicode folding', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-case-fold-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), 'İSECRET', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: {
+          text: [{ id: 'case-folded-copy', pattern: 'secret', caseSensitive: false }],
+        },
+      },
+    });
+    const finding = result.findings.find((item) => item.ruleId === 'case-folded-copy');
+    expect(finding).toMatchObject({ evidence: 'SECRET' });
+    expect(finding?.location?.offset).toBe(1);
+  });
+
+  it('continues matching after an invalid percent-encoded byte', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-invalid-percent-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '%FF%49NTERNAL_ONLY', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'private-copy',
+        evidence: '%49NTERNAL_ONLY',
+        transform: 'raw+percent',
+      }),
+    );
+  });
+
+  it('advances zero-width Unicode regex matches by a complete code point', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-zero-width-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '😀x', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        limits: { maxFindings: 2 },
+        forbidden: {
+          text: [{ id: 'code-point-start', pattern: '(?=.)', match: 'regex' }],
+        },
+      },
+    });
+    expect(result.findings.map((finding) => finding.evidence)).toEqual(['😀', 'x']);
+    expect(result.findings.map((finding) => finding.location?.offset)).toEqual([0, 2]);
+  });
+
   it('rejects adversarial nested-quantifier regular expressions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-regex-'));
     temporary.push(root);
@@ -171,6 +261,17 @@ describe('artifact scanning', () => {
     expect(new Set(forbidden.findings.map((finding) => finding.ruleId))).toEqual(
       new Set(['SG3002', 'SG4001']),
     );
+  });
+
+  it('does not treat an unsupported compressed sitemap as an inspected sitemap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-sitemap-'));
+    temporary.push(root);
+    await writeFile(join(root, 'sitemap.xml.gz'), Buffer.from([31, 139, 8, 0]));
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG4001' }));
   });
 
   it('streams fixture text without changing its bytes', async () => {

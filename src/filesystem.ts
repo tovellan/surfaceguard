@@ -71,28 +71,32 @@ export async function discoverFiles(
       const absolutePath = resolve(directory, entry.name);
       const relativePath = toPosixPath(relative(root, absolutePath));
       if (!isContained(root, absolutePath)) {
-        findings.push({
-          ruleId: 'SG1001',
-          severity: 'error',
-          category: 'filesystem',
-          artifactPath: relativePath,
-          message: 'Artifact path escapes the scan root',
-        });
+        if (findings.length < limits.maxFindings) {
+          findings.push({
+            ruleId: 'SG1001',
+            severity: 'error',
+            category: 'filesystem',
+            artifactPath: relativePath,
+            message: 'Artifact path escapes the scan root',
+          });
+        }
         continue;
       }
       if (exclude.some((pattern) => matchesGlob(relativePath, pattern))) continue;
 
       const stat = await lstat(absolutePath);
       if (stat.isSymbolicLink()) {
-        findings.push({
-          ruleId: 'SG1002',
-          severity: 'error',
-          category: 'filesystem',
-          artifactPath: relativePath,
-          message: 'Symbolic links are not followed inside artifact roots',
-          evidence: relativePath,
-          help: 'Copy the intended artifact into the build directory as a regular file.',
-        });
+        if (findings.length < limits.maxFindings) {
+          findings.push({
+            ruleId: 'SG1002',
+            severity: 'error',
+            category: 'filesystem',
+            artifactPath: relativePath,
+            message: 'Symbolic links are not followed inside artifact roots',
+            evidence: relativePath,
+            help: 'Copy the intended artifact into the build directory as a regular file.',
+          });
+        }
         continue;
       }
       if (stat.isDirectory()) {
@@ -101,6 +105,17 @@ export async function discoverFiles(
       }
       if (!stat.isFile()) continue;
 
+      if (stat.size > limits.maxFileBytes) {
+        throw new SurfaceGuardError(
+          'SG_RESOURCE_LIMIT',
+          'Artifact file exceeds maxFileBytes',
+          {
+            artifactPath: relativePath,
+            limit: limits.maxFileBytes,
+            observed: stat.size,
+          },
+        );
+      }
       if (files.length + 1 > limits.maxFiles) {
         throw new SurfaceGuardError(
           'SG_RESOURCE_LIMIT',

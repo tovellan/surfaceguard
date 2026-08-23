@@ -1,4 +1,4 @@
-import { rawSpanForMatch, decodeTextVariants } from './decode.js';
+import { decodeTextVariantsForMatching, rawSpanForMatch } from './decode.js';
 import { SurfaceGuardError } from './errors.js';
 import type { ArtifactFile, Finding, PatternRule, ScanLimits } from './types.js';
 
@@ -51,22 +51,39 @@ function safeRegex(rule: PatternRule, limits: ScanLimits): RegExp {
   }
 }
 
-function literalMatches(
+function* literalMatches(
   text: string,
   pattern: string,
   caseSensitive: boolean,
-): [number, number][] {
-  const haystack = caseSensitive ? text : text.toLocaleLowerCase('en-US');
-  const needle = caseSensitive ? pattern : pattern.toLocaleLowerCase('en-US');
-  const matches: [number, number][] = [];
-  let offset = 0;
-  while (needle.length > 0) {
-    const index = haystack.indexOf(needle, offset);
-    if (index < 0) break;
-    matches.push([index, needle.length]);
-    offset = index + Math.max(1, needle.length);
+): Generator<[number, number]> {
+  if (!caseSensitive) {
+    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+    yield* regexMatches(text, new RegExp(escaped, 'giu'));
+    return;
   }
-  return matches;
+  let offset = 0;
+  while (pattern.length > 0) {
+    const index = text.indexOf(pattern, offset);
+    if (index < 0) break;
+    yield [index, pattern.length];
+    offset = index + Math.max(1, pattern.length);
+  }
+}
+
+function codePointWidthAt(text: string, index: number): number {
+  const codePoint = text.codePointAt(index);
+  return codePoint !== undefined && codePoint > 0xffff ? 2 : 1;
+}
+
+function* regexMatches(text: string, regex: RegExp): Generator<[number, number]> {
+  regex.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = regex.exec(text)) !== null) {
+    yield [match.index, match[0].length];
+    if (match[0].length === 0) {
+      regex.lastIndex += codePointWidthAt(text, regex.lastIndex);
+    }
+  }
 }
 
 export function matchPatternRule(
@@ -88,28 +105,19 @@ export function matchPatternRule(
     );
   }
 
-  const variants = decodeTextVariants(raw, limits.maxDecodePasses);
+  const variants = decodeTextVariantsForMatching(raw, limits.maxDecodePasses);
   const findings: Finding[] = [];
   const seen = new Set<string>();
   const regex = rule.match === 'regex' ? safeRegex(rule, limits) : undefined;
 
   for (const variant of variants) {
-    const matches: [number, number][] = [];
-    if (regex) {
-      regex.lastIndex = 0;
-      let match: RegExpExecArray | null;
-      while ((match = regex.exec(variant.text)) !== null) {
-        matches.push([match.index, match[0].length]);
-        if (match[0].length === 0) regex.lastIndex += 1;
-      }
-    } else {
-      matches.push(
-        ...literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false),
-      );
-    }
+    const matches = regex
+      ? regexMatches(variant.text, regex)
+      : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
 
     for (const [start, length] of matches) {
-      const span = rawSpanForMatch(variant, start, Math.max(1, length));
+      const matchLength = length > 0 ? length : codePointWidthAt(variant.text, start);
+      const span = rawSpanForMatch(variant, start, matchLength);
       if (!span) continue;
       const key = `${span.start}:${span.end}`;
       if (seen.has(key)) continue;
@@ -126,6 +134,7 @@ export function matchPatternRule(
         transform: variant.transform,
         help: `Remove the matched material from the produced ${file.kind} artifact or narrow the policy deliberately.`,
       });
+      if (findings.length >= limits.maxFindings) return findings;
     }
   }
   return findings;
