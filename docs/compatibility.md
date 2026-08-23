@@ -38,10 +38,12 @@ The Astro adapter supports static output directories. It maps root `index.html` 
 
 Automatic Astro detection requires both produced HTML and a file under Astro's default reserved `_astro/` asset directory. Select `adapter: astro` explicitly when `build.assets` is customized or a static build has no generated client assets. Server-adapter output and non-HTML endpoint inference are outside this adapter's static-output contract.
 
-Sitemap XML recognizes namespace-qualified `<loc>` elements, CDATA, comments, processing
-instructions, and predefined or numeric entities in one bounded pass. `DOCTYPE`
-declarations fail closed because custom and external entities are not expanded. Gzip
-sitemaps are expanded while streaming under the configured file and total-byte limits.
+Sitemap XML recognizes namespace-qualified page `<loc>` elements directly under
+`<urlset>/<url>`, along with CDATA, comments, processing instructions, and predefined or
+numeric entities in one bounded pass. Sitemap-index references are not page routes, and
+extension locations such as `<image:loc>` are ignored. `DOCTYPE` declarations fail
+closed because custom and external entities are not expanded. Gzip sitemaps are expanded
+while streaming under the configured file and total-byte limits.
 Recognized names include `sitemap.xml.gz`, numbered forms such as `sitemap1.xml.gz`, and
 index forms such as `sitemap_index.xml.gz`. Other compressed assets and archives are not
 expanded.
@@ -52,6 +54,10 @@ patterns use RFC 9309 percent-octet normalization, prefix matching, `*` wildcard
 terminal `$` end anchor. Only an exact root `robots.txt` is authoritative for this check.
 Directive retention and the cumulative sitemap-location-by-`Disallow` comparison product
 have separate configurable ceilings.
+
+Sitemap route completeness omits exact Astro `404.html` and `500.html` error documents
+and exact `/404` and `/500` routes from the Next.js pages manifest. Other similarly named
+user pages remain ordinary public routes.
 
 An extensionless or unrecognized file remains kind `unknown`. Valid text is inspected by
 applicable text, endpoint, and source-map rules. Ambiguous content produces fail-closed

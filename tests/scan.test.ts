@@ -717,6 +717,113 @@ describe('artifact scanning', () => {
     },
   );
 
+  it('keeps sitemap indexes and extension locations out of page-route reconciliation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-sitemap-location-kind-'));
+    temporary.push(root);
+    await writeFile(
+      join(root, 'route-manifest.json'),
+      JSON.stringify({ route: '/page' }),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      [
+        '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"',
+        ' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">',
+        '<url><loc>https://example.test/page</loc>',
+        '<image:image><image:loc>https://example.test/images/photo.jpg</image:loc></image:image>',
+        '</url></urlset>',
+      ].join(''),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'sitemap_index.xml'),
+      [
+        '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+        '<sitemap><loc>https://example.test/sitemap.xml</loc></sitemap>',
+        '</sitemapindex>',
+      ].join(''),
+      'utf8',
+    );
+
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        failOn: 'warning',
+        sitemap: { mode: 'required', requireRoutes: true },
+      },
+    });
+    expect(result.adapter).toBe('generic');
+    expect(result.findings).toEqual([]);
+    expect(result.failed).toBe(false);
+  });
+
+  it('does not require Astro error documents in a sitemap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-astro-errors-'));
+    temporary.push(root);
+    await mkdir(join(root, '_astro'));
+    await mkdir(join(root, 'docs'));
+    await writeFile(join(root, '_astro/app.js'), '', 'utf8');
+    await writeFile(join(root, 'index.html'), '<!doctype html>', 'utf8');
+    await writeFile(join(root, '404.html'), '<!doctype html>', 'utf8');
+    await writeFile(join(root, '500.html'), '<!doctype html>', 'utf8');
+    await writeFile(join(root, 'docs/404.html'), '<!doctype html>', 'utf8');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/</loc></url></urlset>',
+      'utf8',
+    );
+
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required', requireRoutes: true } },
+    });
+    expect(result.adapter).toBe('astro');
+    expect(
+      result.findings
+        .filter((finding) => finding.ruleId === 'SG4006')
+        .map((finding) => finding.evidence),
+    ).toEqual(['/docs/404.html']);
+  });
+
+  it('does not require Next.js error routes in a sitemap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-next-errors-'));
+    temporary.push(root);
+    await mkdir(join(root, 'server'));
+    await writeFile(
+      join(root, 'server/pages-manifest.json'),
+      JSON.stringify({
+        '/': 'index.js',
+        '/404': '404.js',
+        '/500': '500.js',
+        '/errors/404': 'errors/404.js',
+      }),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'build-manifest.json'),
+      JSON.stringify({ pages: { '/404': ['404.js'], '/500': ['500.js'] } }),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/</loc></url></urlset>',
+      'utf8',
+    );
+
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required', requireRoutes: true } },
+    });
+    expect(result.adapter).toBe('nextjs');
+    expect(
+      result.findings
+        .filter((finding) => finding.ruleId === 'SG4006')
+        .map((finding) => finding.evidence),
+    ).toEqual(['/errors/404']);
+  });
+
   it.each([
     'https%3A%2F%2Fexample.test%2Fprivate',
     'https%3A%252F%252Fexample.test%252Fprivate',

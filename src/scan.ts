@@ -101,6 +101,38 @@ function normalizeRoute(value: string, maxDecodePasses: number): string {
   }
 }
 
+const ASTRO_ERROR_DOCUMENTS = new Set(['404.html', '500.html']);
+const NEXT_ERROR_ROUTES = new Set(['/404', '/500']);
+
+function frameworkErrorRoutes(
+  adapterName: string,
+  routes: readonly RouteEvidence[],
+  maxDecodePasses: number,
+): ReadonlySet<string> {
+  const errors = new Set<string>();
+  for (const evidence of routes) {
+    const route = normalizeRoute(
+      evidence.route,
+      evidence.routeKind === 'artifact-path' ? 0 : maxDecodePasses,
+    );
+    if (
+      adapterName === 'astro' &&
+      evidence.routeKind === 'artifact-path' &&
+      ASTRO_ERROR_DOCUMENTS.has(evidence.artifactPath)
+    ) {
+      errors.add(route);
+    }
+    if (
+      adapterName === 'nextjs' &&
+      basename(evidence.artifactPath) === 'pages-manifest.json' &&
+      NEXT_ERROR_ROUTES.has(route)
+    ) {
+      errors.add(route);
+    }
+  }
+  return errors;
+}
+
 function evaluateRoutes(
   routes: readonly RouteEvidence[],
   options: ScanOptions,
@@ -163,6 +195,7 @@ function evaluateSitemap(
   files: readonly ArtifactFile[],
   texts: ReadonlyMap<string, string>,
   routes: ReadonlyMap<string, RouteEvidence>,
+  excludedFrameworkRoutes: ReadonlySet<string>,
   limits: Readonly<ScanLimits>,
   signal?: AbortSignal,
 ): Finding[] {
@@ -293,8 +326,14 @@ function evaluateSitemap(
   }
   if (settings.requireRoutes) {
     for (const [route, evidence] of routes) {
-      if (route.includes('[') || route.startsWith('/api/') || route.startsWith('/_'))
+      if (
+        route.includes('[') ||
+        route.startsWith('/api/') ||
+        route.startsWith('/_') ||
+        excludedFrameworkRoutes.has(route)
+      ) {
         continue;
+      }
       if (!sitemapRoutes.has(route)) {
         findings.push({
           ruleId: 'SG4006',
@@ -481,6 +520,11 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
   );
   collector.addAll(routeResult.findings);
   collector.addAll(evaluatedRoutes.findings);
+  const excludedFrameworkRoutes = frameworkErrorRoutes(
+    adapter.name,
+    routeResult.routes,
+    limits.maxDecodePasses,
+  );
   let filesScanned = 0;
   const unknownPatternRules = [
     ...(policy.forbidden?.text ?? []),
@@ -618,6 +662,7 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
       discovered.files,
       texts,
       evaluatedRoutes.normalized,
+      excludedFrameworkRoutes,
       limits,
       input.signal,
     ),

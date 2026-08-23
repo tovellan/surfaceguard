@@ -298,6 +298,13 @@ export function validatePolicy(value: unknown): SurfaceGuardPolicy {
     assertKnownKeys(routes, ['allow', 'deny', 'require'], '$.routes');
     for (const key of ['allow', 'deny', 'require'] as const) {
       const routeGlobs = strings(routes[key], `$.routes.${key}`);
+      if (key === 'allow' && routeGlobs?.length === 0) {
+        throw new SurfaceGuardError(
+          'SG_CONFIG_INVALID',
+          '$.routes.allow must contain at least one route pattern when present',
+          { path: '$.routes.allow' },
+        );
+      }
       routeGlobs?.forEach((glob, index) =>
         globs.push({ glob, path: `$.routes.${key}[${index}]` }),
       );

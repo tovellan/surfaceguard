@@ -33,7 +33,10 @@ explicitly when scanning an intentionally mixed tree.
 }
 ```
 
-When `allow` is present, every discovered route must match at least one pattern. `deny` is evaluated independently. A route matching both lists fails. Each `require` pattern must match at least one produced route.
+When a non-empty `allow` list is present, every discovered route must match at least one
+pattern. An empty `allow` list is rejected as ambiguous configuration. `deny` is evaluated
+independently. A route matching both lists fails. Each `require` pattern must match at
+least one produced route.
 
 Route evidence comes from produced manifests. Source directories and route declarations are not read.
 A trailing `/**` matches descendants, not the exact prefix, so list both `/docs` and
@@ -111,17 +114,23 @@ File rules apply before text classification, so they also cover binary and other
 - `mode` is `off`, `if-present`, or `required`.
 - `requireRobotsReference` requires at least one `Sitemap:` directive.
 - `requireRoutes` requires non-dynamic, non-API public manifest routes in the sitemap.
+  Exact framework error documents (`404.html` and `500.html` for Astro, `/404` and
+  `/500` from the Next.js pages manifest) are excluded; similarly named user pages in
+  other directories remain required.
 - `forbidDisallowedRoutes` rejects sitemap paths matched by route deny assertions.
 - Sitemap paths disallowed by robots rules are always reported when sitemap checks run.
 - Sitemap paths missing from route manifests are warnings.
 
-Sitemap `<loc>` elements are recognized by namespace-local name. Normal text, CDATA,
-predefined and numeric XML entities are combined, while comments and processing
-instructions are ignored. Parsing is one pass and the cumulative `<loc>` count is bounded
-by `maxSitemapEntries`. `DOCTYPE` declarations are rejected with `SG_IO_ERROR` because
-external and custom XML entities are not expanded. Gzip sitemaps are expanded while
-streaming. Both the compressed file and expanded output are bounded by `maxFileBytes`,
-and total expanded sitemap output is bounded by `maxTotalBytes`.
+Page locations are namespace-qualified `<loc>` elements directly under `<url>` entries
+in a `<urlset>`. Sitemap-index references are counted but do not enter page-route or
+robots reconciliation, and extension locations such as `<image:loc>` are ignored.
+Normal text, CDATA, predefined and numeric XML entities are combined, while comments and
+processing instructions are ignored. Parsing is one forward pass and the cumulative
+page and sitemap-index location count is bounded by `maxSitemapEntries`. `DOCTYPE`
+declarations are rejected with `SG_IO_ERROR` because external and custom XML entities
+are not expanded. Gzip sitemaps are expanded while streaming. Both the compressed file
+and expanded output are bounded by `maxFileBytes`, and total expanded sitemap output is
+bounded by `maxTotalBytes`.
 
 Only the exact root artifact `robots.txt` participates in consistency checks. SurfaceGuard
 conservatively applies every eligible `Disallow:` value it reads. Matching uses the

@@ -204,12 +204,12 @@ describe('framework adapters', () => {
       readText: () =>
         Promise.resolve(
           JSON.stringify({
-            routes: [{ pathname: '/one' }, { route: '/two' }],
+            routes: ['/direct', { pathname: '/one' }, { route: '/two' }],
             label: '/not-a-route',
           }),
         ),
     });
-    expect(result.routes.map((item) => item.route)).toEqual(['/one', '/two']);
+    expect(result.routes.map((item) => item.route)).toEqual(['/direct', '/one', '/two']);
   });
 
   it('propagates operational read errors instead of calling a manifest malformed', async () => {

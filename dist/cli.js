@@ -883,6 +883,13 @@ function validatePolicy(value) {
     assertKnownKeys(routes, ["allow", "deny", "require"], "$.routes");
     for (const key of ["allow", "deny", "require"]) {
       const routeGlobs = strings(routes[key], `$.routes.${key}`);
+      if (key === "allow" && routeGlobs?.length === 0) {
+        throw new SurfaceGuardError(
+          "SG_CONFIG_INVALID",
+          "$.routes.allow must contain at least one route pattern when present",
+          { path: "$.routes.allow" }
+        );
+      }
       routeGlobs?.forEach(
         (glob, index) => globs.push({ glob, path: `$.routes.${key}[${index}]` })
       );
@@ -1266,7 +1273,7 @@ var AdapterBudget = class {
 };
 
 // src/adapters/generic.ts
-var ROUTE_KEYS = /* @__PURE__ */ new Set(["page", "path", "pathname", "route"]);
+var ROUTE_KEYS = /* @__PURE__ */ new Set(["page", "path", "pathname", "route", "routes"]);
 var SITEMAP_FILENAME = /^sitemap(?:(?:[_-]?index)|(?:[_-]?\d+)|(?:-[^/]*))?\.xml(?:\.gz)?$/u;
 function classifyGeneric(relativePath) {
   const lower = relativePath.toLowerCase();
@@ -2375,8 +2382,12 @@ function parseSitemap(text, maxDecodePasses, options) {
   const robotsPaths = [];
   let entriesVisited = options.entriesVisited ?? 0;
   let cursor = 0;
+  let elementDepth = 0;
+  let rootKind;
+  let pageEntryDepth;
+  let sitemapEntryDepth;
   let openLocation;
-  const visitLocation = (value) => {
+  const visitLocation = (value, kind) => {
     entriesVisited += 1;
     if (entriesVisited > options.maxEntries) {
       throw new SurfaceGuardError(
@@ -2389,7 +2400,7 @@ function parseSitemap(text, maxDecodePasses, options) {
       );
     }
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || kind === "sitemap-reference") return;
     const robotsPath = robotsPathForSitemapLocation(trimmed, maxDecodePasses);
     if (robotsPath) robotsPaths.push(robotsPath);
     try {
@@ -2438,21 +2449,50 @@ function parseSitemap(text, maxDecodePasses, options) {
     const tagEnd = markupEnd(text, tagStart + 1, options.signal);
     if (tagEnd < 0) break;
     const name = markupName(text, tagStart, tagEnd);
-    const locationTag = localName(name) === "loc";
+    const local = localName(name);
+    const locationTag = local === "loc";
     const closing = text[tagStart + 1] === "/";
     const selfClosing = !closing && selfClosingMarkup(text, tagStart, tagEnd);
-    if (locationTag) {
-      if (closing && openLocation) {
-        openLocation.depth -= 1;
-        if (openLocation.depth === 0) {
-          visitLocation(openLocation.chunks.join(""));
-          openLocation = void 0;
+    if (closing) {
+      if (locationTag && openLocation?.depth === elementDepth) {
+        visitLocation(openLocation.chunks.join(""), openLocation.kind);
+        openLocation = void 0;
+      }
+      if (local === "url" && pageEntryDepth === elementDepth) {
+        pageEntryDepth = void 0;
+      }
+      if (local === "sitemap" && sitemapEntryDepth === elementDepth) {
+        sitemapEntryDepth = void 0;
+      }
+      if (elementDepth === 1 && (local === "urlset" && rootKind === "urlset" || local === "sitemapindex" && rootKind === "sitemapindex")) {
+        rootKind = void 0;
+      }
+      elementDepth = Math.max(0, elementDepth - 1);
+    } else {
+      const parentDepth = elementDepth;
+      let locationKind;
+      if (locationTag && parentDepth === pageEntryDepth) locationKind = "page";
+      if (locationTag && parentDepth === sitemapEntryDepth) {
+        locationKind = "sitemap-reference";
+      }
+      if (selfClosing) {
+        if (locationKind && !openLocation) visitLocation("", locationKind);
+      } else {
+        if (parentDepth === 0) {
+          if (local === "urlset" || local === "sitemapindex") rootKind = local;
+        } else if (parentDepth === 1 && rootKind === "urlset" && local === "url") {
+          pageEntryDepth = parentDepth + 1;
+        } else if (parentDepth === 1 && rootKind === "sitemapindex" && local === "sitemap") {
+          sitemapEntryDepth = parentDepth + 1;
         }
-      } else if (!closing && selfClosing && !openLocation) {
-        visitLocation("");
-      } else if (!closing && !selfClosing) {
-        if (openLocation) openLocation.depth += 1;
-        else openLocation = { depth: 1, chunks: [] };
+        if (locationKind && !openLocation) {
+          openLocation = {
+            depth: parentDepth + 1,
+            kind: locationKind,
+            chunks: []
+          };
+        }
+        elementDepth += 1;
       }
     }
     cursor = tagEnd + 1;
@@ -2639,6 +2679,24 @@ function normalizeRoute(value, maxDecodePasses) {
     return value;
   }
 }
+var ASTRO_ERROR_DOCUMENTS = /* @__PURE__ */ new Set(["404.html", "500.html"]);
+var NEXT_ERROR_ROUTES = /* @__PURE__ */ new Set(["/404", "/500"]);
+function frameworkErrorRoutes(adapterName, routes, maxDecodePasses) {
+  const errors = /* @__PURE__ */ new Set();
+  for (const evidence of routes) {
+    const route = normalizeRoute(
+      evidence.route,
+      evidence.routeKind === "artifact-path" ? 0 : maxDecodePasses
+    );
+    if (adapterName === "astro" && evidence.routeKind === "artifact-path" && ASTRO_ERROR_DOCUMENTS.has(evidence.artifactPath)) {
+      errors.add(route);
+    }
+    if (adapterName === "nextjs" && basename3(evidence.artifactPath) === "pages-manifest.json" && NEXT_ERROR_ROUTES.has(route)) {
+      errors.add(route);
+    }
+  }
+  return errors;
+}
 function evaluateRoutes(routes, options, maxDecodePasses) {
   const findings = [];
   const normalized = /* @__PURE__ */ new Map();
@@ -2690,7 +2748,7 @@ function evaluateRoutes(routes, options, maxDecodePasses) {
   }
   return { findings, normalized };
 }
-function evaluateSitemap(policy, files, texts, routes, limits, signal) {
+function evaluateSitemap(policy, files, texts, routes, excludedFrameworkRoutes, limits, signal) {
   const settings = policy.sitemap;
   if (!settings || settings.mode === "off") return [];
   const findings = [];
@@ -2811,8 +2869,9 @@ function evaluateSitemap(policy, files, texts, routes, limits, signal) {
   }
   if (settings.requireRoutes) {
     for (const [route, evidence] of routes) {
-      if (route.includes("[") || route.startsWith("/api/") || route.startsWith("/_"))
+      if (route.includes("[") || route.startsWith("/api/") || route.startsWith("/_") || excludedFrameworkRoutes.has(route)) {
         continue;
+      }
       if (!sitemapRoutes.has(route)) {
         findings.push({
           ruleId: "SG4006",
@@ -2974,6 +3033,11 @@ async function scanArtifacts(input) {
   );
   collector.addAll(routeResult.findings);
   collector.addAll(evaluatedRoutes.findings);
+  const excludedFrameworkRoutes = frameworkErrorRoutes(
+    adapter.name,
+    routeResult.routes,
+    limits.maxDecodePasses
+  );
   let filesScanned = 0;
   const unknownPatternRules = [
     ...policy.forbidden?.text ?? [],
@@ -3095,6 +3159,7 @@ async function scanArtifacts(input) {
       discovered.files,
       texts,
       evaluatedRoutes.normalized,
+      excludedFrameworkRoutes,
       limits,
       input.signal
     )

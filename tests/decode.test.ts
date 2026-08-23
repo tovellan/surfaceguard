@@ -210,6 +210,32 @@ describe('URL decoding and canonicalization', () => {
     });
   });
 
+  it('separates page locations from sitemap references and extension locations', () => {
+    const urlset = [
+      '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"',
+      ' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">',
+      '<url><loc>https://public.example/page</loc>',
+      '<image:image><image:loc>https://public.example/images/photo.jpg</image:loc></image:image>',
+      '</url></urlset>',
+    ].join('');
+    expect(parseSitemap(urlset, 3, { maxEntries: 1 })).toEqual({
+      routes: ['/page'],
+      robotsPaths: ['/page'],
+      entriesVisited: 1,
+    });
+
+    const sitemapIndex = [
+      '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      '<sitemap><loc>https://public.example/sitemap-child.xml</loc></sitemap>',
+      '</sitemapindex>',
+    ].join('');
+    expect(parseSitemap(sitemapIndex, 3, { maxEntries: 1 })).toEqual({
+      routes: [],
+      robotsPaths: [],
+      entriesVisited: 1,
+    });
+  });
+
   it('preserves reserved percent octets for robots reconciliation', () => {
     const sitemap =
       '<urlset><url><loc>https://public.example/encoded%2Fslash?q=a%2Fb</loc></url></urlset>';

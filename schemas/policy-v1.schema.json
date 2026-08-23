@@ -18,7 +18,7 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "allow": { "$ref": "#/$defs/stringList" },
+        "allow": { "$ref": "#/$defs/stringList", "minItems": 1 },
         "deny": { "$ref": "#/$defs/stringList" },
         "require": { "$ref": "#/$defs/stringList" }
       }

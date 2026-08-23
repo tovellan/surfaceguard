@@ -25,6 +25,7 @@ describe('policy validation', () => {
     [{ schemaVersion: 2 }, 'schemaVersion'],
     [{ schemaVersion: 1, unknown: true }, 'unknown'],
     [{ schemaVersion: 1, routes: { allow: [1] } }, 'allow'],
+    [{ schemaVersion: 1, routes: { allow: [] } }, 'at least one route pattern'],
     [{ schemaVersion: 1, sourceMaps: { mode: 'sometimes' } }, 'mode'],
     [{ schemaVersion: 1, limits: { maxFiles: 0 } }, 'positive'],
     [

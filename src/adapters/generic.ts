@@ -10,7 +10,7 @@ import type {
   RouteEvidence,
 } from '../types.js';
 
-const ROUTE_KEYS = new Set(['page', 'path', 'pathname', 'route']);
+const ROUTE_KEYS = new Set(['page', 'path', 'pathname', 'route', 'routes']);
 const SITEMAP_FILENAME =
   /^sitemap(?:(?:[_-]?index)|(?:[_-]?\d+)|(?:-[^/]*))?\.xml(?:\.gz)?$/u;
 

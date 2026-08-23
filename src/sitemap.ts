@@ -44,6 +44,7 @@ export interface ParsedSitemap {
 
 interface OpenLocation {
   depth: number;
+  kind: 'page' | 'sitemap-reference';
   chunks: string[];
 }
 
@@ -126,9 +127,13 @@ export function parseSitemap(
   const robotsPaths: string[] = [];
   let entriesVisited = options.entriesVisited ?? 0;
   let cursor = 0;
+  let elementDepth = 0;
+  let rootKind: 'urlset' | 'sitemapindex' | undefined;
+  let pageEntryDepth: number | undefined;
+  let sitemapEntryDepth: number | undefined;
   let openLocation: OpenLocation | undefined;
 
-  const visitLocation = (value: string): void => {
+  const visitLocation = (value: string, kind: OpenLocation['kind']): void => {
     entriesVisited += 1;
     if (entriesVisited > options.maxEntries) {
       throw new SurfaceGuardError(
@@ -141,7 +146,7 @@ export function parseSitemap(
       );
     }
     const trimmed = value.trim();
-    if (!trimmed) return;
+    if (!trimmed || kind === 'sitemap-reference') return;
     const robotsPath = robotsPathForSitemapLocation(trimmed, maxDecodePasses);
     if (robotsPath) robotsPaths.push(robotsPath);
     try {
@@ -194,22 +199,60 @@ export function parseSitemap(
     const tagEnd = markupEnd(text, tagStart + 1, options.signal);
     if (tagEnd < 0) break;
     const name = markupName(text, tagStart, tagEnd);
-    const locationTag = localName(name) === 'loc';
+    const local = localName(name);
+    const locationTag = local === 'loc';
     const closing = text[tagStart + 1] === '/';
     const selfClosing = !closing && selfClosingMarkup(text, tagStart, tagEnd);
 
-    if (locationTag) {
-      if (closing && openLocation) {
-        openLocation.depth -= 1;
-        if (openLocation.depth === 0) {
-          visitLocation(openLocation.chunks.join(''));
-          openLocation = undefined;
+    if (closing) {
+      if (locationTag && openLocation?.depth === elementDepth) {
+        visitLocation(openLocation.chunks.join(''), openLocation.kind);
+        openLocation = undefined;
+      }
+      if (local === 'url' && pageEntryDepth === elementDepth) {
+        pageEntryDepth = undefined;
+      }
+      if (local === 'sitemap' && sitemapEntryDepth === elementDepth) {
+        sitemapEntryDepth = undefined;
+      }
+      if (
+        elementDepth === 1 &&
+        ((local === 'urlset' && rootKind === 'urlset') ||
+          (local === 'sitemapindex' && rootKind === 'sitemapindex'))
+      ) {
+        rootKind = undefined;
+      }
+      elementDepth = Math.max(0, elementDepth - 1);
+    } else {
+      const parentDepth = elementDepth;
+      let locationKind: OpenLocation['kind'] | undefined;
+      if (locationTag && parentDepth === pageEntryDepth) locationKind = 'page';
+      if (locationTag && parentDepth === sitemapEntryDepth) {
+        locationKind = 'sitemap-reference';
+      }
+
+      if (selfClosing) {
+        if (locationKind && !openLocation) visitLocation('', locationKind);
+      } else {
+        if (parentDepth === 0) {
+          if (local === 'urlset' || local === 'sitemapindex') rootKind = local;
+        } else if (parentDepth === 1 && rootKind === 'urlset' && local === 'url') {
+          pageEntryDepth = parentDepth + 1;
+        } else if (
+          parentDepth === 1 &&
+          rootKind === 'sitemapindex' &&
+          local === 'sitemap'
+        ) {
+          sitemapEntryDepth = parentDepth + 1;
         }
-      } else if (!closing && selfClosing && !openLocation) {
-        visitLocation('');
-      } else if (!closing && !selfClosing) {
-        if (openLocation) openLocation.depth += 1;
-        else openLocation = { depth: 1, chunks: [] };
+        if (locationKind && !openLocation) {
+          openLocation = {
+            depth: parentDepth + 1,
+            kind: locationKind,
+            chunks: [],
+          };
+        }
+        elementDepth += 1;
       }
     }
     cursor = tagEnd + 1;
