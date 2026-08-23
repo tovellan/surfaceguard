@@ -32,7 +32,7 @@ export interface FileRule {
 
 export interface SurfaceGuardPolicyV1 {
   schemaVersion: 1;
-  adapter?: 'auto' | 'generic' | 'nextjs';
+  adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
   failOn?: Severity;
   exclude?: string[];
   routes?: {
@@ -134,7 +134,7 @@ export interface ScanResult {
 export interface ScanOptions {
   root: string;
   policy: SurfaceGuardPolicy;
-  adapter?: 'auto' | 'generic' | 'nextjs';
+  adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
   signal?: AbortSignal;
 }
 

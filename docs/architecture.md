@@ -34,7 +34,7 @@ A `FrameworkAdapter` has three operations:
 
 Adapters receive only produced files and a bounded text reader. They must not depend on source folders or network access.
 
-The Next.js adapter reads known output manifest shapes by field name. Unknown fields are ignored. A malformed known manifest produces `SG1004` and does not terminate the full scan.
+The Next.js adapter reads known output manifest shapes by field name. The Vite adapter reads produced HTML entry paths and validates the default build manifest without treating source keys as routes. Unknown fields are ignored. A malformed known manifest produces `SG1004` and does not terminate the full scan.
 
 ## Determinism
 

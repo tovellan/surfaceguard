@@ -2,7 +2,7 @@
 
 SurfaceGuard verifies produced web build artifacts against an explicit public-surface policy. It checks what a deployment would contain instead of trusting source folders, route declarations, or framework conventions.
 
-The 0.2 series provides a framework-neutral TypeScript library and command line interface, plus a Next.js adapter and GitHub Action. It scans route manifests, client chunks, server bundles, static assets, source maps, sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
+The 0.2 series provides a framework-neutral TypeScript library and command line interface, plus Next.js and Vite adapters and a GitHub Action. It scans route manifests, client chunks, server bundles, static assets, source maps, sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
 
 SurfaceGuard is not published to npm. Install a released version directly from GitHub:
 

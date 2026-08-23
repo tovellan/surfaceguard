@@ -1,14 +1,16 @@
 import { describe, expect, it } from 'vitest';
 
 import { classifyGeneric, genericAdapter } from '../src/adapters/generic.js';
+import { selectAdapter } from '../src/adapters/index.js';
 import { nextjsAdapter } from '../src/adapters/nextjs.js';
-import type { ArtifactFile } from '../src/types.js';
+import { viteAdapter } from '../src/adapters/vite.js';
+import type { ArtifactFile, ArtifactKind } from '../src/types.js';
 
-function file(relativePath: string): ArtifactFile {
+function file(relativePath: string, kind: ArtifactKind = 'route-manifest'): ArtifactFile {
   return {
     absolutePath: `/${relativePath}`,
     relativePath,
-    kind: 'route-manifest',
+    kind,
     size: 10,
   };
 }
@@ -58,7 +60,7 @@ describe('framework adapters', () => {
         rewrites: { beforeFiles: [{ source: '/legacy' }] },
       },
     };
-    const files = Object.keys(content).map(file);
+    const files = Object.keys(content).map((relativePath) => file(relativePath));
     const result = await nextjsAdapter.collectRoutes({
       root: '/',
       files,
@@ -105,5 +107,69 @@ describe('framework adapters', () => {
         ),
     });
     expect(result.routes.map((item) => item.route)).toEqual(['/one', '/two']);
+  });
+
+  it('collects Vite HTML entry routes without treating manifest keys as URLs', async () => {
+    const files = [
+      file('index.html', 'metadata'),
+      file('about.html', 'metadata'),
+      file('blog/index.html', 'metadata'),
+      file('.vite/manifest.json', 'metadata'),
+      file('assets/main.js', 'client-chunk'),
+    ];
+    const result = await viteAdapter.collectRoutes({
+      root: '/',
+      files,
+      readText: () =>
+        Promise.resolve(
+          JSON.stringify({
+            'src/main.ts': {
+              file: 'assets/main.js',
+              src: 'src/main.ts',
+              isEntry: true,
+            },
+          }),
+        ),
+    });
+    expect(result.routes.map((item) => item.route)).toEqual([
+      '/',
+      '/about.html',
+      '/blog/index.html',
+    ]);
+    expect(result.findings).toEqual([]);
+    expect(viteAdapter.classify('.vite/manifest.json')).toBe('metadata');
+    expect(viteAdapter.classify('assets/main.js')).toBe('client-chunk');
+    expect(selectAdapter('auto', files).name).toBe('vite');
+  });
+
+  it('reports a malformed Vite manifest without discarding HTML route evidence', async () => {
+    const files = [file('index.html', 'metadata'), file('.vite/manifest.json', 'metadata')];
+    const result = await viteAdapter.collectRoutes({
+      root: '/',
+      files,
+      readText: () => Promise.resolve('{'),
+    });
+    expect(result.routes.map((item) => item.route)).toEqual(['/']);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'SG1004',
+        artifactPath: '.vite/manifest.json',
+      }),
+    );
+  });
+
+  it('rejects Vite manifest chunks without output files', async () => {
+    const manifest = file('.vite/manifest.json', 'metadata');
+    const result = await viteAdapter.collectRoutes({
+      root: '/',
+      files: [manifest],
+      readText: () => Promise.resolve(JSON.stringify({ 'src/main.ts': { isEntry: true } })),
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'SG1004',
+        evidence: 'Manifest chunks must name an output file',
+      }),
+    );
   });
 });

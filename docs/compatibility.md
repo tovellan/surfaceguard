@@ -22,4 +22,6 @@ Unknown manifest fields are ignored. Framework releases can change private build
 
 App Router paths are normalized before policy evaluation. Route groups and parallel slots are removed, interception markers are resolved, `page` and `route` leaf markers are stripped, and the framework's not-found entry is omitted. Pages Router paths remain unchanged.
 
+The Vite adapter recognizes the default `.vite/manifest.json` build manifest and produced HTML entry points. HTML route evidence preserves Vite's output path contract: `index.html` maps to `/`, while other HTML files retain their relative filename under a leading slash. Manifest source keys and asset filenames are not treated as public routes.
+
 Compressed sitemaps and archives are not expanded. A compressed sitemap does not satisfy a required sitemap policy.

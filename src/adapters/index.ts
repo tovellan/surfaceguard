@@ -1,12 +1,17 @@
 import { genericAdapter } from './generic.js';
 import { nextjsAdapter } from './nextjs.js';
+import { viteAdapter } from './vite.js';
 import { SurfaceGuardError } from '../errors.js';
 import type { ArtifactFile, FrameworkAdapter } from '../types.js';
 
-export const adapters: readonly FrameworkAdapter[] = [nextjsAdapter, genericAdapter];
+export const adapters: readonly FrameworkAdapter[] = [
+  nextjsAdapter,
+  viteAdapter,
+  genericAdapter,
+];
 
 export function selectAdapter(
-  requested: 'auto' | 'generic' | 'nextjs',
+  requested: 'auto' | 'generic' | 'nextjs' | 'vite',
   files: readonly ArtifactFile[],
 ): FrameworkAdapter {
   if (requested !== 'auto') {
@@ -23,3 +28,4 @@ export function selectAdapter(
 
 export { genericAdapter } from './generic.js';
 export { nextjsAdapter } from './nextjs.js';
+export { viteAdapter } from './vite.js';
