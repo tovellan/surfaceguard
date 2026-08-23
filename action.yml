@@ -1,0 +1,28 @@
+name: SurfaceGuard
+description: Scan produced web artifacts against a versioned public-surface policy
+author: Tovellan
+inputs:
+  artifact:
+    description: Path to the produced artifact directory
+    required: true
+  policy:
+    description: Path to a SurfaceGuard policy file
+    required: true
+  adapter:
+    description: 'Adapter override: auto, generic, or nextjs'
+    required: false
+    default: auto
+  sarif:
+    description: Optional path for SARIF output
+    required: false
+outputs:
+  findings:
+    description: Total number of findings
+  failed:
+    description: Whether findings met the configured failure threshold
+runs:
+  using: node20
+  main: dist/action/action.cjs
+branding:
+  icon: shield
+  color: orange

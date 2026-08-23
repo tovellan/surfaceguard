@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "adapter": "nextjs",
+  "failOn": "error",
+  "routes": {
+    "allow": ["/", "/docs", "/api/status"],
+    "deny": ["/staff/**"],
+    "require": ["/docs"]
+  },
+  "sourceMaps": {
+    "mode": "forbid",
+    "inline": "forbid"
+  },
+  "forbidden": {
+    "text": [
+      {
+        "id": "private-copy",
+        "pattern": "INTERNAL_ONLY",
+        "match": "literal",
+        "scopes": ["all"]
+      }
+    ],
+    "endpoints": [
+      {
+        "id": "private-endpoint",
+        "pattern": "/private-api/",
+        "match": "literal"
+      }
+    ],
+    "metadata": [
+      {
+        "id": "private-metadata",
+        "pattern": "staff workspace",
+        "caseSensitive": false
+      }
+    ],
+    "files": [
+      {
+        "id": "environment-file",
+        "glob": "**/.env*"
+      }
+    ]
+  },
+  "sitemap": {
+    "mode": "required",
+    "requireRobotsReference": true,
+    "requireRoutes": true,
+    "forbidDisallowedRoutes": true
+  }
+}

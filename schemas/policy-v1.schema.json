@@ -1,0 +1,127 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://raw.githubusercontent.com/tovellan/surfaceguard/main/schemas/policy-v1.schema.json",
+  "title": "SurfaceGuard policy v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion"],
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "adapter": { "enum": ["auto", "generic", "nextjs"] },
+    "failOn": { "$ref": "#/$defs/severity" },
+    "exclude": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "routes": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allow": { "$ref": "#/$defs/stringList" },
+        "deny": { "$ref": "#/$defs/stringList" },
+        "require": { "$ref": "#/$defs/stringList" }
+      }
+    },
+    "sourceMaps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "enum": ["allow", "forbid"] },
+        "inline": { "enum": ["allow", "forbid"] }
+      }
+    },
+    "forbidden": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "text": { "$ref": "#/$defs/patternRules" },
+        "endpoints": { "$ref": "#/$defs/patternRules" },
+        "metadata": { "$ref": "#/$defs/patternRules" },
+        "files": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/fileRule" }
+        }
+      }
+    },
+    "sitemap": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "mode": { "enum": ["off", "if-present", "required"] },
+        "requireRobotsReference": { "type": "boolean" },
+        "requireRoutes": { "type": "boolean" },
+        "forbidDisallowedRoutes": { "type": "boolean" }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "maxFiles": { "$ref": "#/$defs/positiveInteger" },
+        "maxFileBytes": { "$ref": "#/$defs/positiveInteger" },
+        "maxTotalBytes": { "$ref": "#/$defs/positiveInteger" },
+        "maxFindings": { "$ref": "#/$defs/positiveInteger" },
+        "maxDecodePasses": { "$ref": "#/$defs/positiveInteger" },
+        "maxPatternLength": { "$ref": "#/$defs/positiveInteger" }
+      }
+    }
+  },
+  "$defs": {
+    "severity": { "enum": ["error", "warning", "note"] },
+    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "stringList": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "uniqueItems": true
+    },
+    "scope": {
+      "enum": [
+        "all",
+        "route-manifest",
+        "client-chunk",
+        "server-bundle",
+        "static-asset",
+        "source-map",
+        "sitemap",
+        "robots",
+        "metadata",
+        "unknown"
+      ]
+    },
+    "patternRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "pattern"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
+        "pattern": { "type": "string", "minLength": 1 },
+        "match": { "enum": ["literal", "regex"] },
+        "caseSensitive": { "type": "boolean" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "scopes": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/scope" },
+          "uniqueItems": true
+        },
+        "message": { "type": "string" }
+      }
+    },
+    "patternRules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/patternRule" }
+    },
+    "fileRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "glob"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
+        "glob": { "type": "string", "minLength": 1 },
+        "severity": { "$ref": "#/$defs/severity" },
+        "message": { "type": "string" }
+      }
+    }
+  }
+}

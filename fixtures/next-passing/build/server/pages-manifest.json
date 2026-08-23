@@ -1,0 +1,5 @@
+{
+  "/": "pages/index.js",
+  "/docs": "pages/docs.js",
+  "/api/status": "pages/api/status.js"
+}

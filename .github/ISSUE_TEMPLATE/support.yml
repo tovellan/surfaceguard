@@ -1,0 +1,24 @@
+name: Support question
+description: Ask about released behavior with a synthetic example
+title: 'support: '
+labels: [question]
+body:
+  - type: input
+    id: version
+    attributes:
+      label: SurfaceGuard version
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Question and synthetic context
+    validations:
+      required: true
+  - type: checkboxes
+    id: security
+    attributes:
+      label: Security check
+      options:
+        - label: This is not a vulnerability report and contains no private artifact evidence.
+          required: true
