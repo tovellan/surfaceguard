@@ -82,7 +82,7 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
       decoded = new TextDecoder('utf-8', { fatal: true }).decode(Uint8Array.from(bytes));
     } catch {
       output += input.text[index] ?? '';
-      const span = input.spans[index];
+      const span = sourceSpanAt(input, index);
       if (span) spans.push(span);
       continue;
     }
