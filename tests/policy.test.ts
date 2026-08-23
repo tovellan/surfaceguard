@@ -19,6 +19,13 @@ describe('policy validation', () => {
       { schemaVersion: 1, forbidden: { text: [{ id: 'Bad ID', pattern: 'x' }] } },
       'identifier',
     ],
+    [
+      {
+        schemaVersion: 1,
+        forbidden: { files: [{ id: 'private-file', glob: '*.txt', message: 42 }] },
+      },
+      'message',
+    ],
   ])('rejects malformed policy %#', (input, message) => {
     expect(() => validatePolicy(input)).toThrow(message);
   });

@@ -132,6 +132,40 @@ describe('artifact scanning', () => {
     expect(result.failed).toBe(false);
   });
 
+  it.each(['literal', 'regex'] as const)(
+    'bounds repeated %s matches before allocating the complete match set',
+    async (match) => {
+      const root = await mkdtemp(join(tmpdir(), 'surfaceguard-findings-'));
+      temporary.push(root);
+      await writeFile(join(root, 'bundle.js'), 'a'.repeat(256 * 1024), 'utf8');
+      const result = await scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          limits: { maxFindings: 7 },
+          forbidden: { text: [{ id: 'repeated-text', pattern: 'a', match }] },
+        },
+      });
+      expect(result.findings).toHaveLength(7);
+    },
+  );
+
+  it('preserves evidence spans after astral Unicode characters', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-unicode-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '😀INTERNAL_ONLY', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    const finding = result.findings.find((item) => item.ruleId === 'private-copy');
+    expect(finding).toMatchObject({ ruleId: 'private-copy', evidence: 'INTERNAL_ONLY' });
+    expect(finding?.location?.offset).toBe(2);
+  });
+
   it('rejects adversarial nested-quantifier regular expressions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-regex-'));
     temporary.push(root);
@@ -171,6 +205,17 @@ describe('artifact scanning', () => {
     expect(new Set(forbidden.findings.map((finding) => finding.ruleId))).toEqual(
       new Set(['SG3002', 'SG4001']),
     );
+  });
+
+  it('does not treat an unsupported compressed sitemap as an inspected sitemap', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-sitemap-'));
+    temporary.push(root);
+    await writeFile(join(root, 'sitemap.xml.gz'), Buffer.from([31, 139, 8, 0]));
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG4001' }));
   });
 
   it('streams fixture text without changing its bytes', async () => {

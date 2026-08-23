@@ -161,6 +161,11 @@ function validateFileRule(value, path) {
       path
     });
   }
+  if (item.message !== void 0 && typeof item.message !== "string") {
+    throw new SurfaceGuardError("SG_CONFIG_INVALID", `${path}.message must be a string`, {
+      path
+    });
+  }
   return item;
 }
 function validatePatternRules(value, path) {
@@ -423,8 +428,7 @@ function classifyGeneric(relativePath) {
   const name = basename(lower);
   const extension = extname(lower);
   if (name === "robots.txt") return "robots";
-  if (/^sitemap(?:-[^/]*)?\.xml$/u.test(name) || name === "sitemap.xml.gz")
-    return "sitemap";
+  if (/^sitemap(?:-[^/]*)?\.xml$/u.test(name)) return "sitemap";
   if (name.endsWith(".map") || name.endsWith(".map.json")) return "source-map";
   if (name.includes("routes-manifest") || name.includes("route-manifest") || name === "pages-manifest.json" || name === "app-paths-manifest.json" || name === "prerender-manifest.json") {
     return "route-manifest";
@@ -625,42 +629,52 @@ function selectAdapter(requested, files) {
 }
 
 // src/decode.ts
+var IDENTITY_SPAN_VARIANTS = /* @__PURE__ */ new WeakSet();
 function identitySpans(text) {
-  return Array.from(text, (_, index) => ({ start: index, end: index + 1 }));
+  return Array.from({ length: text.length }, (_, index) => ({
+    start: index,
+    end: index + 1
+  }));
+}
+function sourceSpanAt(input, index) {
+  return IDENTITY_SPAN_VARIANTS.has(input) ? { start: index, end: index + 1 } : input.spans[index];
 }
 function decodeHexEscapes(input) {
+  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4})/iu.test(input.text)) return void 0;
   let output = "";
   const spans = [];
   let changed = false;
   for (let index = 0; index < input.text.length; index += 1) {
-    const short = /^\\x([0-9a-f]{2})/iu.exec(input.text.slice(index));
-    const long = /^\\u([0-9a-f]{4})/iu.exec(input.text.slice(index));
+    const escaped = input.text[index] === "\\";
+    const short = escaped ? /^\\x([0-9a-f]{2})/iu.exec(input.text.slice(index)) : null;
+    const long = escaped ? /^\\u([0-9a-f]{4})/iu.exec(input.text.slice(index)) : null;
     const match = long ?? short;
     if (match?.[1]) {
       const width = match[0].length;
       output += String.fromCodePoint(Number.parseInt(match[1], 16));
-      const first = input.spans[index];
-      const last = input.spans[index + width - 1];
+      const first = sourceSpanAt(input, index);
+      const last = sourceSpanAt(input, index + width - 1);
       if (first && last) spans.push({ start: first.start, end: last.end });
       index += width - 1;
       changed = true;
       continue;
     }
     output += input.text[index] ?? "";
-    const span = input.spans[index];
+    const span = sourceSpanAt(input, index);
     if (span) spans.push(span);
   }
   return changed ? { text: output, spans, transform: `${input.transform}+js-hex` } : void 0;
 }
 function decodePercent(input) {
+  if (!/%[0-9a-f]{2}/iu.test(input.text)) return void 0;
   let output = "";
   const spans = [];
   let changed = false;
   for (let index = 0; index < input.text.length; index += 1) {
-    const match = /^(?:%[0-9a-f]{2})+/iu.exec(input.text.slice(index));
+    const match = input.text[index] === "%" ? /^(?:%[0-9a-f]{2})+/iu.exec(input.text.slice(index)) : null;
     if (!match) {
       output += input.text[index] ?? "";
-      const span = input.spans[index];
+      const span = sourceSpanAt(input, index);
       if (span) spans.push(span);
       continue;
     }
@@ -674,20 +688,26 @@ function decodePercent(input) {
       if (span) spans.push(span);
       continue;
     }
-    const first = input.spans[index];
-    const last = input.spans[index + match[0].length - 1];
+    const first = sourceSpanAt(input, index);
+    const last = sourceSpanAt(input, index + match[0].length - 1);
     if (!first || !last) continue;
     for (const character of decoded) {
       output += character;
       spans.push({ start: first.start, end: last.end });
+      if (character.length === 2) spans.push({ start: first.start, end: last.end });
     }
     index += match[0].length - 1;
     changed = true;
   }
   return changed ? { text: output, spans, transform: `${input.transform}+percent` } : void 0;
 }
-function decodeTextVariants(text, maxPasses) {
-  const original = { text, spans: identitySpans(text), transform: "raw" };
+function variantsForText(text, maxPasses, materializeIdentitySpans) {
+  const original = {
+    text,
+    spans: materializeIdentitySpans ? identitySpans(text) : [],
+    transform: "raw"
+  };
+  if (!materializeIdentitySpans) IDENTITY_SPAN_VARIANTS.add(original);
   const variants = [original];
   let current = decodeHexEscapes(original) ?? original;
   if (current !== original) variants.push(current);
@@ -704,9 +724,12 @@ function decodeTextVariants(text, maxPasses) {
   }
   return variants;
 }
+function decodeTextVariantsForMatching(text, maxPasses) {
+  return variantsForText(text, maxPasses, false);
+}
 function rawSpanForMatch(variant, start, length) {
-  const first = variant.spans[start];
-  const last = variant.spans[Math.max(start, start + length - 1)];
+  const first = sourceSpanAt(variant, start);
+  const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
   return first && last ? { start: first.start, end: last.end } : void 0;
 }
 function repeatedlyDecodeUrl(value, maxPasses = 3) {
@@ -834,27 +857,31 @@ async function discoverFiles(inputRoot, limits, exclude) {
       const absolutePath = resolve2(directory, entry.name);
       const relativePath = toPosixPath(relative(root, absolutePath));
       if (!isContained(root, absolutePath)) {
-        findings.push({
-          ruleId: "SG1001",
-          severity: "error",
-          category: "filesystem",
-          artifactPath: relativePath,
-          message: "Artifact path escapes the scan root"
-        });
+        if (findings.length < limits.maxFindings) {
+          findings.push({
+            ruleId: "SG1001",
+            severity: "error",
+            category: "filesystem",
+            artifactPath: relativePath,
+            message: "Artifact path escapes the scan root"
+          });
+        }
         continue;
       }
       if (exclude.some((pattern) => matchesGlob(relativePath, pattern))) continue;
       const stat = await lstat(absolutePath);
       if (stat.isSymbolicLink()) {
-        findings.push({
-          ruleId: "SG1002",
-          severity: "error",
-          category: "filesystem",
-          artifactPath: relativePath,
-          message: "Symbolic links are not followed inside artifact roots",
-          evidence: relativePath,
-          help: "Copy the intended artifact into the build directory as a regular file."
-        });
+        if (findings.length < limits.maxFindings) {
+          findings.push({
+            ruleId: "SG1002",
+            severity: "error",
+            category: "filesystem",
+            artifactPath: relativePath,
+            message: "Symbolic links are not followed inside artifact roots",
+            evidence: relativePath,
+            help: "Copy the intended artifact into the build directory as a regular file."
+          });
+        }
         continue;
       }
       if (stat.isDirectory()) {
@@ -992,18 +1019,24 @@ function safeRegex(rule, limits) {
     );
   }
 }
-function literalMatches(text, pattern, caseSensitive) {
+function* literalMatches(text, pattern, caseSensitive) {
   const haystack = caseSensitive ? text : text.toLocaleLowerCase("en-US");
   const needle = caseSensitive ? pattern : pattern.toLocaleLowerCase("en-US");
-  const matches = [];
   let offset = 0;
   while (needle.length > 0) {
     const index = haystack.indexOf(needle, offset);
     if (index < 0) break;
-    matches.push([index, needle.length]);
+    yield [index, needle.length];
     offset = index + Math.max(1, needle.length);
   }
-  return matches;
+}
+function* regexMatches(text, regex) {
+  regex.lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    yield [match.index, match[0].length];
+    if (match[0].length === 0) regex.lastIndex += 1;
+  }
 }
 function matchPatternRule(raw, file, rule, category, limits) {
   if (rule.scopes && !rule.scopes.includes("all") && !rule.scopes.includes(file.kind))
@@ -1017,24 +1050,12 @@ function matchPatternRule(raw, file, rule, category, limits) {
       }
     );
   }
-  const variants = decodeTextVariants(raw, limits.maxDecodePasses);
+  const variants = decodeTextVariantsForMatching(raw, limits.maxDecodePasses);
   const findings = [];
   const seen = /* @__PURE__ */ new Set();
   const regex = rule.match === "regex" ? safeRegex(rule, limits) : void 0;
   for (const variant of variants) {
-    const matches = [];
-    if (regex) {
-      regex.lastIndex = 0;
-      let match;
-      while ((match = regex.exec(variant.text)) !== null) {
-        matches.push([match.index, match[0].length]);
-        if (match[0].length === 0) regex.lastIndex += 1;
-      }
-    } else {
-      matches.push(
-        ...literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false)
-      );
-    }
+    const matches = regex ? regexMatches(variant.text, regex) : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
     for (const [start, length] of matches) {
       const span = rawSpanForMatch(variant, start, Math.max(1, length));
       if (!span) continue;
@@ -1053,6 +1074,7 @@ function matchPatternRule(raw, file, rule, category, limits) {
         transform: variant.transform,
         help: `Remove the matched material from the produced ${file.kind} artifact or narrow the policy deliberately.`
       });
+      if (findings.length >= limits.maxFindings) return findings;
     }
   }
   return findings;
