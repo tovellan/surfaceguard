@@ -7,6 +7,7 @@ describe('policy validation', () => {
   it('accepts a minimal version 1 policy and supplies limits', () => {
     const policy = validatePolicy({ schemaVersion: 1 });
     expect(resolveLimits(policy).maxFiles).toBeGreaterThan(1_000);
+    expect(validatePolicy({ schemaVersion: 1, adapter: 'vite' }).adapter).toBe('vite');
   });
 
   it.each([

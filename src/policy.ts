@@ -12,7 +12,7 @@ import type {
 } from './types.js';
 
 const SEVERITIES = new Set<Severity>(['error', 'warning', 'note']);
-const ADAPTERS = new Set(['auto', 'generic', 'nextjs']);
+const ADAPTERS = new Set(['auto', 'generic', 'nextjs', 'vite']);
 const SCOPES = new Set([
   'all',
   'route-manifest',
@@ -199,7 +199,7 @@ export function validatePolicy(value: unknown): SurfaceGuardPolicy {
   ) {
     throw new SurfaceGuardError(
       'SG_CONFIG_INVALID',
-      'adapter must be auto, generic, or nextjs',
+      'adapter must be auto, generic, nextjs, or vite',
       {
         path: '$.adapter',
       },

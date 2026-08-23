@@ -40,7 +40,7 @@ var DEFAULT_LIMITS = Object.freeze({
 
 // src/policy.ts
 var SEVERITIES = /* @__PURE__ */ new Set(["error", "warning", "note"]);
-var ADAPTERS = /* @__PURE__ */ new Set(["auto", "generic", "nextjs"]);
+var ADAPTERS = /* @__PURE__ */ new Set(["auto", "generic", "nextjs", "vite"]);
 var SCOPES = /* @__PURE__ */ new Set([
   "all",
   "route-manifest",
@@ -209,7 +209,7 @@ function validatePolicy(value) {
   if (root.adapter !== void 0 && (typeof root.adapter !== "string" || !ADAPTERS.has(root.adapter))) {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
-      "adapter must be auto, generic, or nextjs",
+      "adapter must be auto, generic, nextjs, or vite",
       {
         path: "$.adapter"
       }
@@ -413,7 +413,7 @@ function renderSarif(result) {
 }
 
 // src/scan.ts
-var import_node_path5 = require("path");
+var import_node_path6 = require("path");
 
 // src/adapters/generic.ts
 var import_node_path2 = require("path");
@@ -639,8 +639,75 @@ var nextjsAdapter = {
   }
 };
 
+// src/adapters/vite.ts
+var import_node_path4 = require("path");
+var VITE_MANIFEST = ".vite/manifest.json";
+function isHtml(relativePath) {
+  return (0, import_node_path4.extname)(relativePath.toLowerCase()) === ".html";
+}
+function routeForHtml(relativePath) {
+  return relativePath === "index.html" ? "/" : `/${relativePath}`;
+}
+function validateManifest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Manifest root must be an object");
+  }
+  for (const chunk of Object.values(value)) {
+    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+      throw new TypeError("Manifest chunks must be objects");
+    }
+    const output = chunk.file;
+    if (typeof output !== "string" || output.length === 0) {
+      throw new TypeError("Manifest chunks must name an output file");
+    }
+  }
+}
+var viteAdapter = {
+  name: "vite",
+  detect(files) {
+    return files.reduce((score, file) => {
+      if (file.relativePath === VITE_MANIFEST) return score + 20;
+      if (isHtml(file.relativePath)) return score + 3;
+      if (file.relativePath.startsWith("assets/")) return score + 1;
+      return score;
+    }, 0);
+  },
+  classify(relativePath) {
+    if (relativePath === VITE_MANIFEST || isHtml(relativePath)) return "metadata";
+    return classifyGeneric(relativePath);
+  },
+  async collectRoutes(context) {
+    const routes = context.files.filter((file) => isHtml(file.relativePath)).map((file) => ({
+      route: routeForHtml(file.relativePath),
+      artifactPath: file.relativePath,
+      pointer: "/"
+    }));
+    const findings = [];
+    const manifest = context.files.find((file) => file.relativePath === VITE_MANIFEST);
+    if (manifest) {
+      try {
+        validateManifest(JSON.parse(await context.readText(manifest)));
+      } catch (error) {
+        findings.push({
+          ruleId: "SG1004",
+          severity: "error",
+          category: "route",
+          artifactPath: manifest.relativePath,
+          message: "Vite manifest is malformed or unreadable",
+          evidence: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    return { routes, findings };
+  }
+};
+
 // src/adapters/index.ts
-var adapters = [nextjsAdapter, genericAdapter];
+var adapters = [
+  nextjsAdapter,
+  viteAdapter,
+  genericAdapter
+];
 function selectAdapter(requested, files) {
   if (requested !== "auto") {
     const exact = adapters.find((adapter) => adapter.name === requested);
@@ -784,7 +851,7 @@ function canonicalizeUrl(value, maxPasses = 3) {
 // src/filesystem.ts
 var import_node_fs = require("fs");
 var import_promises2 = require("fs/promises");
-var import_node_path4 = require("path");
+var import_node_path5 = require("path");
 
 // src/glob.ts
 var REGEX_SPECIAL = /* @__PURE__ */ new Set(["\\", "^", "$", ".", "+", "(", ")", "|", "{", "}"]);
@@ -827,14 +894,14 @@ function matchesGlob(value, glob) {
 
 // src/filesystem.ts
 function toPosixPath(value) {
-  return value.split(import_node_path4.sep).join("/");
+  return value.split(import_node_path5.sep).join("/");
 }
 function isContained(root, candidate) {
-  const child = (0, import_node_path4.relative)(root, candidate);
-  return child === "" || !child.startsWith(`..${import_node_path4.sep}`) && child !== ".." && !(0, import_node_path4.isAbsolute)(child);
+  const child = (0, import_node_path5.relative)(root, candidate);
+  return child === "" || !child.startsWith(`..${import_node_path5.sep}`) && child !== ".." && !(0, import_node_path5.isAbsolute)(child);
 }
 async function discoverFiles(inputRoot, limits, exclude) {
-  const requestedRoot = (0, import_node_path4.resolve)(inputRoot);
+  const requestedRoot = (0, import_node_path5.resolve)(inputRoot);
   let rootStat;
   try {
     rootStat = await (0, import_promises2.lstat)(requestedRoot);
@@ -877,8 +944,8 @@ async function discoverFiles(inputRoot, limits, exclude) {
     for await (const entry of handle) entries.push(entry);
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      const absolutePath = (0, import_node_path4.resolve)(directory, entry.name);
-      const relativePath = toPosixPath((0, import_node_path4.relative)(root, absolutePath));
+      const absolutePath = (0, import_node_path5.resolve)(directory, entry.name);
+      const relativePath = toPosixPath((0, import_node_path5.relative)(root, absolutePath));
       if (!isContained(root, absolutePath)) {
         if (findings.length < limits.maxFindings) {
           findings.push({
@@ -1383,7 +1450,7 @@ async function scanArtifacts(input2) {
         category: "source-map",
         artifactPath: file.relativePath,
         message: "Source map file is forbidden by policy",
-        evidence: (0, import_node_path5.basename)(file.relativePath)
+        evidence: (0, import_node_path6.basename)(file.relativePath)
       });
     }
     if (file.kind === "unknown") continue;
@@ -1503,7 +1570,7 @@ async function run() {
   const root = input("artifact", true);
   const policyPath = input("policy", true);
   const adapterValue = input("adapter") || "auto";
-  if (adapterValue !== "auto" && adapterValue !== "generic" && adapterValue !== "nextjs") {
+  if (adapterValue !== "auto" && adapterValue !== "generic" && adapterValue !== "nextjs" && adapterValue !== "vite") {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
       `Unsupported adapter: ${adapterValue}`

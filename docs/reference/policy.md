@@ -4,17 +4,17 @@ SurfaceGuard policies are JSON documents. `schemaVersion` is required and must b
 
 ## Top-level properties
 
-| Property        | Type                        | Behavior                                                             |
-| --------------- | --------------------------- | -------------------------------------------------------------------- |
-| `schemaVersion` | `1`                         | Selects the policy contract.                                         |
-| `adapter`       | `auto`, `generic`, `nextjs` | Selects or detects a framework adapter.                              |
-| `failOn`        | `error`, `warning`, `note`  | Sets the lowest severity that returns exit code 1. Default: `error`. |
-| `exclude`       | string array                | Glob patterns excluded before file accounting and scanning.          |
-| `routes`        | object                      | Route allow, deny, and required assertions.                          |
-| `sourceMaps`    | object                      | Source-map file and directive behavior.                              |
-| `forbidden`     | object                      | Text, endpoint, metadata, and filename rules.                        |
-| `sitemap`       | object                      | Sitemap and robots consistency behavior.                             |
-| `limits`        | object                      | Resource ceilings.                                                   |
+| Property        | Type                                | Behavior                                                             |
+| --------------- | ----------------------------------- | -------------------------------------------------------------------- |
+| `schemaVersion` | `1`                                 | Selects the policy contract.                                         |
+| `adapter`       | `auto`, `generic`, `nextjs`, `vite` | Selects or detects a framework adapter.                              |
+| `failOn`        | `error`, `warning`, `note`          | Sets the lowest severity that returns exit code 1. Default: `error`. |
+| `exclude`       | string array                        | Glob patterns excluded before file accounting and scanning.          |
+| `routes`        | object                              | Route allow, deny, and required assertions.                          |
+| `sourceMaps`    | object                              | Source-map file and directive behavior.                              |
+| `forbidden`     | object                              | Text, endpoint, metadata, and filename rules.                        |
+| `sitemap`       | object                              | Sitemap and robots consistency behavior.                             |
+| `limits`        | object                              | Resource ceilings.                                                   |
 
 Glob matching uses slash-separated artifact paths. Route patterns match normalized URL paths.
 
