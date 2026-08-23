@@ -93,22 +93,6 @@ function fetchRelease(repository, tag) {
   return selectRelease(pages, tag);
 }
 
-export function assertImmutableReleaseSetting(settings) {
-  if (settings?.enabled !== true) {
-    throw new Error('Repository immutable releases must be enabled');
-  }
-}
-
-export async function guardedReleaseMutation(loadSettings, mutate) {
-  const settings = await loadSettings();
-  assertImmutableReleaseSetting(settings);
-  return mutate();
-}
-
-function fetchImmutableReleaseSetting(repository) {
-  return JSON.parse(runGh(['api', `repos/${repository}/immutable-releases`]));
-}
-
 export function assertTagContract(ref, annotatedTag, contract) {
   const valid =
     ref?.ref === `refs/tags/${contract.tag}` &&
@@ -145,14 +129,11 @@ export function assertPublishTarget(current, snapshot, contract) {
   }
 }
 
-async function publishRelease(repository, snapshot, contract) {
+function publishRelease(repository, snapshot, contract) {
   const endpoint = `repos/${repository}/releases/${snapshot?.id}`;
   const current = JSON.parse(runGh(['api', endpoint]));
   assertPublishTarget(current, snapshot, contract);
-  await guardedReleaseMutation(
-    () => fetchImmutableReleaseSetting(repository),
-    () => runGh(['api', '--method', 'PATCH', endpoint, '-F', 'draft=false']),
-  );
+  runGh(['api', '--method', 'PATCH', endpoint, '-F', 'draft=false']);
 }
 
 async function archiveContract(directory) {
@@ -211,23 +192,19 @@ async function main() {
       fetch: () => fetchRelease(repository, tag),
       create: () => {
         verifyRemoteTag(repository, contract);
-        return guardedReleaseMutation(
-          () => fetchImmutableReleaseSetting(repository),
-          () =>
-            runGh([
-              'release',
-              'create',
-              tag,
-              '--repo',
-              repository,
-              '--draft',
-              '--verify-tag',
-              '--title',
-              contract.title,
-              '--notes-file',
-              local.notesPath,
-            ]),
-        );
+        return runGh([
+          'release',
+          'create',
+          tag,
+          '--repo',
+          repository,
+          '--draft',
+          '--verify-tag',
+          '--title',
+          contract.title,
+          '--notes-file',
+          local.notesPath,
+        ]);
       },
       upload: () =>
         runGh(['release', 'upload', tag, local.archivePath, '--repo', repository]),
