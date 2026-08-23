@@ -44,6 +44,6 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
-          RELEASE_NOTES=".github/release-notes/${RELEASE_TAG#v}.md"
+          RELEASE_NOTES=".github/release-notes/${RELEASE_TAG}.md"
           test -f "$RELEASE_NOTES"
           gh release create "$RELEASE_TAG" release-assets/*.tgz --verify-tag --title "SurfaceGuard $RELEASE_TAG" --notes-file "$RELEASE_NOTES"
