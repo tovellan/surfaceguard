@@ -4,7 +4,7 @@
 
 SurfaceGuard supports maintained Node.js release lines from Node.js 20 onward. CI tests Node.js 20, 22, and 24 on Linux. Development also checks current macOS behavior.
 
-The library is ESM. The bundled GitHub Action targets the Node.js 20 action runtime.
+The library is ESM. The bundled GitHub Action targets the Node.js 24 action runtime.
 
 ## Artifact formats
 

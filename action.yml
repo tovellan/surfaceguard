@@ -21,7 +21,7 @@ outputs:
   failed:
     description: Whether findings met the configured failure threshold
 runs:
-  using: node20
+  using: node24
   main: dist/action/action.cjs
 branding:
   icon: shield
