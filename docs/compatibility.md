@@ -20,4 +20,6 @@ The Next.js adapter supports produced Pages Router and App Router manifests with
 
 Unknown manifest fields are ignored. Framework releases can change private build formats, so every supported shape has synthetic tests. Report a minimal synthetic fixture when a maintained Next.js release produces a different shape.
 
+App Router paths are normalized before policy evaluation. Route groups and parallel slots are removed, interception markers are resolved, `page` and `route` leaf markers are stripped, and the framework's not-found entry is omitted. Pages Router paths remain unchanged.
+
 Compressed sitemaps and archives are not expanded. A compressed sitemap does not satisfy a required sitemap policy.

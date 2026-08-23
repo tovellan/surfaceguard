@@ -31,8 +31,20 @@ describe('framework adapters', () => {
 
   it('collects semantic routes from supported Next.js manifests', async () => {
     const content: Record<string, unknown> = {
-      'server/pages-manifest.json': { '/': 'index.js', '/docs': 'docs.js' },
-      'server/app-paths-manifest.json': { '/catalog/page': 'catalog.js' },
+      'server/pages-manifest.json': {
+        '/': 'index.js',
+        '/docs': 'docs.js',
+        '/page': 'page.js',
+      },
+      'server/app-paths-manifest.json': {
+        '/(marketing)/catalog/page': 'catalog.js',
+        '/api/status/route': 'status.js',
+        '/feed/@modal/(..)photo/[id]/page': 'photo.js',
+        '/feed/@modal/(.)item/[id]/page': 'item.js',
+        '/one/two/@modal/(..)(..)archive/page': 'archive.js',
+        '/one/@modal/(...)root/page': 'root.js',
+        '/_not-found/page': 'not-found.js',
+      },
       'build-manifest.json': { pages: { '/pricing': ['pricing.js'] } },
       'prerender-manifest.json': {
         routes: { '/about': {} },
@@ -57,7 +69,13 @@ describe('framework adapters', () => {
       new Set([
         '/',
         '/docs',
+        '/page',
         '/catalog',
+        '/api/status',
+        '/photo/[id]',
+        '/feed/item/[id]',
+        '/archive',
+        '/root',
         '/pricing',
         '/about',
         '/items/[id]',
@@ -69,6 +87,7 @@ describe('framework adapters', () => {
       ]),
     );
     expect(result.findings).toEqual([]);
+    expect(result.routes.map((item) => item.route)).not.toContain('/_not-found');
     expect(nextjsAdapter.detect(files)).toBeGreaterThan(10);
   });
 
