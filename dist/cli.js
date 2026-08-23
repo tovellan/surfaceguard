@@ -504,13 +504,35 @@ var NEXT_MANIFESTS = /* @__PURE__ */ new Set([
   "prerender-manifest.json",
   "routes-manifest.json"
 ]);
-function addRoute(routes, seen, route, file, pointer) {
+function addRoute(routes, seen, route, file, pointer, normalize = (value) => value) {
   if (typeof route !== "string" || !route.startsWith("/")) return;
-  const normalized = route.endsWith("/page") ? route.slice(0, -5) || "/" : route;
+  const normalized = normalize(route);
+  if (!normalized) return;
   const key = `${normalized}\0${file.relativePath}\0${pointer}`;
   if (seen.has(key)) return;
   seen.add(key);
   routes.push({ route: normalized, artifactPath: file.relativePath, pointer });
+}
+function normalizeAppPath(route) {
+  const segments = route.split("/").filter(Boolean);
+  if (segments.at(-1) === "page" || segments.at(-1) === "route") segments.pop();
+  const publicSegments = [];
+  for (let segment of segments) {
+    if (segment.startsWith("@") || /^\([^/]+\)$/u.test(segment)) continue;
+    if (segment.startsWith("(...)")) {
+      publicSegments.length = 0;
+      segment = segment.slice(5);
+    } else {
+      while (segment.startsWith("(..)")) {
+        publicSegments.pop();
+        segment = segment.slice(4);
+      }
+      if (segment.startsWith("(.)")) segment = segment.slice(3);
+    }
+    if (segment) publicSegments.push(segment);
+  }
+  if (publicSegments.includes("_not-found")) return void 0;
+  return publicSegments.length > 0 ? `/${publicSegments.join("/")}` : "/";
 }
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
@@ -520,8 +542,14 @@ function collectNextRoutes(value, file, routes) {
   if (!root) throw new TypeError("Manifest root must be an object");
   const seen = /* @__PURE__ */ new Set();
   const name = basename2(file.relativePath);
-  if (name === "pages-manifest.json" || name === "app-paths-manifest.json") {
+  if (name === "pages-manifest.json") {
     Object.keys(root).forEach((route) => addRoute(routes, seen, route, file, `/${route}`));
+    return;
+  }
+  if (name === "app-paths-manifest.json") {
+    Object.keys(root).forEach(
+      (route) => addRoute(routes, seen, route, file, `/${route}`, normalizeAppPath)
+    );
     return;
   }
   if (name === "build-manifest.json") {

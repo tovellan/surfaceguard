@@ -10,6 +10,7 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 - Kept case-insensitive literal evidence aligned when Unicode folding changes length.
 - Rejected unsupported compressed sitemaps when a sitemap is required.
 - Aligned file-rule message validation with the published policy schema.
+- Normalized Next.js App Router manifest paths to their public route forms.
 
 ## 0.1.1 - 2026-08-24
 
