@@ -322,7 +322,7 @@ function selectAdapter(requested, files) {
 }
 
 // src/constants.ts
-var VERSION = "0.2.0";
+var VERSION = "0.3.0";
 var DEFAULT_LIMITS = Object.freeze({
   maxFiles: 5e4,
   maxFileBytes: 16 * 1024 * 1024,
