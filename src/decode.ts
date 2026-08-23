@@ -9,31 +9,44 @@ export interface DecodedText {
   transform: string;
 }
 
+const IDENTITY_SPAN_VARIANTS = new WeakSet<DecodedText>();
+
 function identitySpans(text: string): SourceSpan[] {
-  return Array.from(text, (_, index) => ({ start: index, end: index + 1 }));
+  return Array.from({ length: text.length }, (_, index) => ({
+    start: index,
+    end: index + 1,
+  }));
+}
+
+function sourceSpanAt(input: DecodedText, index: number): SourceSpan | undefined {
+  return IDENTITY_SPAN_VARIANTS.has(input)
+    ? { start: index, end: index + 1 }
+    : input.spans[index];
 }
 
 function decodeHexEscapes(input: DecodedText): DecodedText | undefined {
+  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4})/iu.test(input.text)) return undefined;
   let output = '';
   const spans: SourceSpan[] = [];
   let changed = false;
 
   for (let index = 0; index < input.text.length; index += 1) {
-    const short = /^\\x([0-9a-f]{2})/iu.exec(input.text.slice(index));
-    const long = /^\\u([0-9a-f]{4})/iu.exec(input.text.slice(index));
+    const escaped = input.text[index] === '\\';
+    const short = escaped ? /^\\x([0-9a-f]{2})/iu.exec(input.text.slice(index)) : null;
+    const long = escaped ? /^\\u([0-9a-f]{4})/iu.exec(input.text.slice(index)) : null;
     const match = long ?? short;
     if (match?.[1]) {
       const width = match[0].length;
       output += String.fromCodePoint(Number.parseInt(match[1], 16));
-      const first = input.spans[index];
-      const last = input.spans[index + width - 1];
+      const first = sourceSpanAt(input, index);
+      const last = sourceSpanAt(input, index + width - 1);
       if (first && last) spans.push({ start: first.start, end: last.end });
       index += width - 1;
       changed = true;
       continue;
     }
     output += input.text[index] ?? '';
-    const span = input.spans[index];
+    const span = sourceSpanAt(input, index);
     if (span) spans.push(span);
   }
 
@@ -43,15 +56,19 @@ function decodeHexEscapes(input: DecodedText): DecodedText | undefined {
 }
 
 function decodePercent(input: DecodedText): DecodedText | undefined {
+  if (!/%[0-9a-f]{2}/iu.test(input.text)) return undefined;
   let output = '';
   const spans: SourceSpan[] = [];
   let changed = false;
 
   for (let index = 0; index < input.text.length; index += 1) {
-    const match = /^(?:%[0-9a-f]{2})+/iu.exec(input.text.slice(index));
+    const match =
+      input.text[index] === '%'
+        ? /^(?:%[0-9a-f]{2})+/iu.exec(input.text.slice(index))
+        : null;
     if (!match) {
       output += input.text[index] ?? '';
-      const span = input.spans[index];
+      const span = sourceSpanAt(input, index);
       if (span) spans.push(span);
       continue;
     }
@@ -70,12 +87,13 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
       continue;
     }
 
-    const first = input.spans[index];
-    const last = input.spans[index + match[0].length - 1];
+    const first = sourceSpanAt(input, index);
+    const last = sourceSpanAt(input, index + match[0].length - 1);
     if (!first || !last) continue;
     for (const character of decoded) {
       output += character;
       spans.push({ start: first.start, end: last.end });
+      if (character.length === 2) spans.push({ start: first.start, end: last.end });
     }
     index += match[0].length - 1;
     changed = true;
@@ -86,8 +104,17 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
     : undefined;
 }
 
-export function decodeTextVariants(text: string, maxPasses: number): DecodedText[] {
-  const original: DecodedText = { text, spans: identitySpans(text), transform: 'raw' };
+function variantsForText(
+  text: string,
+  maxPasses: number,
+  materializeIdentitySpans: boolean,
+): DecodedText[] {
+  const original: DecodedText = {
+    text,
+    spans: materializeIdentitySpans ? identitySpans(text) : [],
+    transform: 'raw',
+  };
+  if (!materializeIdentitySpans) IDENTITY_SPAN_VARIANTS.add(original);
   const variants: DecodedText[] = [original];
   let current = decodeHexEscapes(original) ?? original;
   if (current !== original) variants.push(current);
@@ -106,13 +133,24 @@ export function decodeTextVariants(text: string, maxPasses: number): DecodedText
   return variants;
 }
 
+export function decodeTextVariants(text: string, maxPasses: number): DecodedText[] {
+  return variantsForText(text, maxPasses, true);
+}
+
+export function decodeTextVariantsForMatching(
+  text: string,
+  maxPasses: number,
+): DecodedText[] {
+  return variantsForText(text, maxPasses, false);
+}
+
 export function rawSpanForMatch(
   variant: DecodedText,
   start: number,
   length: number,
 ): SourceSpan | undefined {
-  const first = variant.spans[start];
-  const last = variant.spans[Math.max(start, start + length - 1)];
+  const first = sourceSpanAt(variant, start);
+  const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
   return first && last ? { start: first.start, end: last.end } : undefined;
 }
 
