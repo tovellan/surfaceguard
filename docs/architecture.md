@@ -6,7 +6,7 @@ SurfaceGuard separates artifact discovery, framework interpretation, policy eval
 
 1. Validate the versioned policy and resolve resource limits.
 2. Resolve the artifact root, reject a symlink root, and walk regular files in sorted order.
-3. Select an explicit adapter or detect one from artifact filenames.
+3. Select an explicit adapter or detect one from unambiguous artifact signals.
 4. Classify files and collect routes from produced manifests.
 5. Evaluate route assertions and scan eligible text artifacts one file at a time.
 6. Reconcile sitemap, robots, route manifest, and route policy evidence.
@@ -19,7 +19,8 @@ through 64 KiB stream chunks. Route manifests are parsed only after the file-siz
 passes. Recognized files are opened with no-follow semantics and their identity is
 verified before and after streaming, so path swaps and post-discovery growth fail closed.
 Finding details are capped and severity-prioritized; threshold evaluation remains
-independent from retained details.
+independent from retained details. Automatic detection fails closed when strong framework
+or generic route-manifest signals conflict rather than choosing by score.
 
 ## Core modules
 
@@ -39,9 +40,15 @@ A `FrameworkAdapter` has three operations:
 - `collectRoutes(context)` returns routes and malformed-manifest findings.
 
 Adapters receive only produced files and a bounded text reader. They must not depend on source folders or network access.
+The exported interface describes this contract, but the public scanner currently selects
+only registered built-in adapter names and does not accept a custom adapter instance.
 
 The Next.js adapter reads known output manifest shapes by field name. The Vite adapter reads produced HTML entry paths and validates the default build manifest without treating source keys as routes. The Astro adapter derives static page routes from produced HTML paths and uses the reserved `_astro/` asset directory only as an automatic-detection signal. Unknown fields are ignored. A syntactically malformed known manifest produces `SG1004` and does not terminate the full scan; operational read, abort, and resource errors remain machine-readable runtime errors.
 
 ## Determinism
 
-File paths, findings, rule lists, and SARIF fingerprints are sorted or content-derived. Reports contain no timestamp, absolute artifact root, random identifier, or measured duration. Resource limits turn unbounded work into stable errors.
+File paths, findings, rule lists, and SARIF fingerprints are sorted or content-derived.
+Reports contain no timestamp, absolute artifact root, random identifier, or measured
+duration. Evidence prefixes are bounded and digest-backed; Markdown output has an
+aggregate byte ceiling, Action annotations have per-level ceilings, and SARIF artifact
+paths are encoded relative URIs. Resource limits turn unbounded work into stable errors.

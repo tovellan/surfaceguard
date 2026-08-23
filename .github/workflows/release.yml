@@ -39,11 +39,13 @@ jobs:
         run: test "$RELEASE_TAG" = "v$(node -p "require('./package.json').version")"
       - name: Create package archive
         run: mkdir release-assets && npm pack --pack-destination release-assets
-      - name: Create GitHub release
+      - name: Stage and publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
+          set -euo pipefail
           RELEASE_NOTES=".github/release-notes/${RELEASE_TAG}.md"
           test -f "$RELEASE_NOTES"
-          gh release create "$RELEASE_TAG" release-assets/*.tgz --verify-tag --title "SurfaceGuard $RELEASE_TAG" --notes-file "$RELEASE_NOTES"
+          gh release create "$RELEASE_TAG" release-assets/*.tgz --draft --verify-tag --title "SurfaceGuard $RELEASE_TAG" --notes-file "$RELEASE_NOTES"
+          gh release edit "$RELEASE_TAG" --draft=false --verify-tag

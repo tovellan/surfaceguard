@@ -2,38 +2,63 @@ import { decodeTextVariantsForMatching, rawSpanForMatch } from './decode.js';
 import { SurfaceGuardError } from './errors.js';
 import type { ArtifactFile, Finding, PatternRule, ScanLimits } from './types.js';
 
+interface LocationCursor {
+  offset: number;
+  line: number;
+  lineStart: number;
+}
+
 function locationAt(
   text: string,
   offset: number,
+  cursor: LocationCursor,
 ): { line: number; column: number; offset: number } {
-  let line = 1;
-  let lineStart = 0;
-  for (let index = 0; index < offset; index += 1) {
-    if (text.charCodeAt(index) === 10) {
-      line += 1;
-      lineStart = index + 1;
-    }
+  if (offset < cursor.offset) {
+    cursor.offset = 0;
+    cursor.line = 1;
+    cursor.lineStart = 0;
   }
-  return { line, column: offset - lineStart + 1, offset };
+  while (cursor.offset < offset) {
+    const code = text.charCodeAt(cursor.offset);
+    if (code === 13) {
+      if (text.charCodeAt(cursor.offset + 1) === 10 && cursor.offset + 1 < offset) {
+        cursor.offset += 1;
+      }
+      cursor.line += 1;
+      cursor.lineStart = cursor.offset + 1;
+    } else if (code === 10) {
+      cursor.line += 1;
+      cursor.lineStart = cursor.offset + 1;
+    }
+    cursor.offset += 1;
+  }
+  return { line: cursor.line, column: offset - cursor.lineStart + 1, offset };
 }
 
-function safeRegex(rule: PatternRule, limits: ScanLimits): RegExp {
+export function compilePatternRule(
+  rule: PatternRule,
+  limits: ScanLimits,
+  path?: string,
+): RegExp | undefined {
   if (rule.pattern.length > limits.maxPatternLength) {
     throw new SurfaceGuardError(
       'SG_CONFIG_INVALID',
       `Pattern ${rule.id} exceeds maxPatternLength`,
       {
         ruleId: rule.id,
+        ...(path ? { path } : {}),
         limit: limits.maxPatternLength,
       },
     );
   }
+  if (rule.match !== 'regex') return undefined;
   if (/\([^)]*[+*][^)]*\)[+*{]/u.test(rule.pattern)) {
     throw new SurfaceGuardError(
       'SG_CONFIG_INVALID',
       `Pattern ${rule.id} contains a nested quantifier`,
       {
         ruleId: rule.id,
+        ...(path ? { path } : {}),
       },
     );
   }
@@ -45,6 +70,7 @@ function safeRegex(rule: PatternRule, limits: ScanLimits): RegExp {
       `Pattern ${rule.id} is not a valid regular expression`,
       {
         ruleId: rule.id,
+        ...(path ? { path } : {}),
         cause: error instanceof Error ? error.message : String(error),
       },
     );
@@ -95,29 +121,18 @@ export function matchPatternRule(
 ): Finding[] {
   if (rule.scopes && !rule.scopes.includes('all') && !rule.scopes.includes(file.kind))
     return [];
-  if (rule.pattern.length > limits.maxPatternLength) {
-    throw new SurfaceGuardError(
-      'SG_CONFIG_INVALID',
-      `Pattern ${rule.id} exceeds maxPatternLength`,
-      {
-        ruleId: rule.id,
-      },
-    );
-  }
-
+  const regex = compilePatternRule(rule, limits);
   const variants = decodeTextVariantsForMatching(raw, limits.maxDecodePasses);
   const findings: Finding[] = [];
   const seen = new Set<string>();
-  const regex = rule.match === 'regex' ? safeRegex(rule, limits) : undefined;
-
   for (const variant of variants) {
+    const locationCursor: LocationCursor = { offset: 0, line: 1, lineStart: 0 };
     const matches = regex
       ? regexMatches(variant.text, regex)
       : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
 
     for (const [start, length] of matches) {
-      const matchLength = length > 0 ? length : codePointWidthAt(variant.text, start);
-      const span = rawSpanForMatch(variant, start, matchLength);
+      const span = rawSpanForMatch(variant, start, length);
       if (!span) continue;
       const key = `${span.start}:${span.end}`;
       if (seen.has(key)) continue;
@@ -130,7 +145,7 @@ export function matchPatternRule(
         artifactPath: file.relativePath,
         message: rule.message ?? `Forbidden ${category} pattern matched`,
         evidence,
-        location: locationAt(raw, span.start),
+        location: locationAt(raw, span.start, locationCursor),
         transform: variant.transform,
         help: `Remove the matched material from the produced ${file.kind} artifact or narrow the policy deliberately.`,
       });

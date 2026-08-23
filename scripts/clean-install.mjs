@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFile, cp, mkdtemp, readdir, rm } from 'node:fs/promises';
+import { copyFile, cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -33,6 +33,22 @@ try {
   await copyFile(join(project, 'examples/library.mjs'), join(temporary, 'library.mjs'));
 
   run('node', ['node_modules/.bin/surfaceguard', '--version']);
+  run('node', [
+    'node_modules/.bin/surfaceguard',
+    'init',
+    '--output',
+    'generated.policy.json',
+  ]);
+  const generatedPolicy = JSON.parse(
+    await readFile(join(temporary, 'generated.policy.json'), 'utf8'),
+  );
+  if (
+    JSON.stringify(generatedPolicy.routes?.deny) !== JSON.stringify(['/staff', '/staff/**'])
+  ) {
+    throw new Error(
+      'Generated starter policy did not preserve exact and descendant route denial',
+    );
+  }
   run('node', [
     'node_modules/.bin/surfaceguard',
     'scan',

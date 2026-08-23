@@ -1,10 +1,11 @@
 import { appendFile, writeFile } from 'node:fs/promises';
 
+import { annotationCommands, commandData, commandProperty } from './action-output.js';
 import { SurfaceGuardError } from './errors.js';
+import { boundOutputText, MAX_RETAINED_MESSAGE_BYTES } from './output-safety.js';
 import { loadPolicy } from './policy.js';
 import { renderMarkdown, renderSarif } from './reporters/index.js';
 import { scanArtifacts } from './scan.js';
-import type { Finding } from './types.js';
 
 function input(name: string, required = false): string {
   const key = `INPUT_${name.toUpperCase().replaceAll(' ', '_')}`;
@@ -13,33 +14,6 @@ function input(name: string, required = false): string {
     throw new SurfaceGuardError('SG_CONFIG_INVALID', `Action input ${name} is required`);
   }
   return value;
-}
-
-function commandData(value: string): string {
-  return value.replaceAll('%', '%25').replaceAll('\r', '%0D').replaceAll('\n', '%0A');
-}
-
-function commandProperty(value: string): string {
-  return commandData(value).replaceAll(':', '%3A').replaceAll(',', '%2C');
-}
-
-function annotation(finding: Finding): void {
-  const level =
-    finding.severity === 'error'
-      ? 'error'
-      : finding.severity === 'warning'
-        ? 'warning'
-        : 'notice';
-  const properties = [
-    `title=${commandProperty(`${finding.ruleId}: ${finding.message}`)}`,
-    `file=${commandProperty(finding.artifactPath)}`,
-  ];
-  if (finding.location) {
-    properties.push(`line=${finding.location.line}`, `col=${finding.location.column}`);
-  }
-  process.stdout.write(
-    `::${level} ${properties.join(',')}::${commandData(finding.evidence ?? finding.message)}\n`,
-  );
 }
 
 async function setOutput(name: string, value: string): Promise<void> {
@@ -81,16 +55,21 @@ async function run(): Promise<void> {
     result.completeness.observedFindingsAtLeast.toString(),
   );
   await setOutput('text-inspection', result.completeness.textInspection);
+  await setOutput(
+    'evidence-truncated',
+    String((result.completeness.truncatedEvidence ?? 0) > 0),
+  );
+  await setOutput(
+    'truncated-evidence',
+    (result.completeness.truncatedEvidence ?? 0).toString(),
+  );
   await setOutput('failed', String(result.failed));
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) await appendFile(summaryPath, renderMarkdown(result), 'utf8');
-  result.findings.forEach(annotation);
-  if (result.failed) {
-    throw new SurfaceGuardError(
-      'SG_IO_ERROR',
-      `SurfaceGuard policy failed. Retained ${result.findings.length} finding detail(s); observed at least ${result.completeness.observedFindingsAtLeast}.`,
-    );
+  for (const command of annotationCommands(result.findings)) {
+    process.stdout.write(command);
   }
+  if (result.failed) process.exitCode = 1;
 }
 
 run().catch((error: unknown) => {
@@ -100,6 +79,8 @@ run().catch((error: unknown) => {
       : error instanceof Error
         ? error.message
         : String(error);
-  process.stdout.write(`::error::${commandData(message)}\n`);
+  process.stdout.write(
+    `::error::${commandData(boundOutputText(message, MAX_RETAINED_MESSAGE_BYTES))}\n`,
+  );
   process.exitCode = 1;
 });

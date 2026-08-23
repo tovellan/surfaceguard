@@ -3,6 +3,9 @@ import { resolve } from 'node:path';
 
 import { DEFAULT_LIMITS } from './constants.js';
 import { SurfaceGuardError } from './errors.js';
+import { globToRegExp } from './glob.js';
+import { compilePatternRule } from './matcher.js';
+import { MAX_RETAINED_MESSAGE_BYTES, MAX_RETAINED_RULE_ID_BYTES } from './output-safety.js';
 import type {
   FileRule,
   PatternRule,
@@ -35,10 +38,7 @@ function record(value: unknown, path: string): Record<string, unknown> {
 
 function strings(value: unknown, path: string): string[] | undefined {
   if (value === undefined) return undefined;
-  if (
-    !Array.isArray(value) ||
-    value.some((item) => typeof item !== 'string' || item.length === 0)
-  ) {
+  if (!Array.isArray(value)) {
     throw new SurfaceGuardError(
       'SG_CONFIG_INVALID',
       `${path} must be an array of non-empty strings`,
@@ -47,7 +47,51 @@ function strings(value: unknown, path: string): string[] | undefined {
       },
     );
   }
-  return value as string[];
+  const result: string[] = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index] as unknown;
+    if (typeof item !== 'string' || item.length === 0) {
+      throw new SurfaceGuardError(
+        'SG_CONFIG_INVALID',
+        `${path}[${index}] must be a non-empty string`,
+        { path: `${path}[${index}]` },
+      );
+    }
+    result.push(item);
+  }
+  const firstIndexes = new Map<string, number>();
+  for (const [index, item] of result.entries()) {
+    const firstIndex = firstIndexes.get(item);
+    if (firstIndex !== undefined) {
+      throw new SurfaceGuardError(
+        'SG_CONFIG_INVALID',
+        `${path}[${index}] duplicates ${path}[${firstIndex}]`,
+        {
+          path: `${path}[${index}]`,
+          duplicateOf: `${path}[${firstIndex}]`,
+        },
+      );
+    }
+    firstIndexes.set(item, index);
+  }
+  return result;
+}
+
+function validateGlob(glob: string, path: string, limits: ScanLimits): void {
+  if (glob.length > limits.maxPatternLength) {
+    throw new SurfaceGuardError('SG_CONFIG_INVALID', `${path} exceeds maxPatternLength`, {
+      path,
+      limit: limits.maxPatternLength,
+    });
+  }
+  try {
+    globToRegExp(glob);
+  } catch (error) {
+    throw new SurfaceGuardError('SG_CONFIG_INVALID', `${path} is not a valid glob`, {
+      path,
+      cause: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 function assertKnownKeys(
@@ -80,6 +124,13 @@ function validatePatternRule(value: unknown, path: string): PatternRule {
       'SG_CONFIG_INVALID',
       `${path}.id has an invalid rule identifier`,
       { path },
+    );
+  }
+  if (Buffer.byteLength(item.id, 'utf8') > MAX_RETAINED_RULE_ID_BYTES) {
+    throw new SurfaceGuardError(
+      'SG_CONFIG_INVALID',
+      `${path}.id exceeds the output-safe identifier limit`,
+      { path: `${path}.id`, limit: MAX_RETAINED_RULE_ID_BYTES },
     );
   }
   if (typeof item.pattern !== 'string' || item.pattern.length === 0) {
@@ -121,6 +172,16 @@ function validatePatternRule(value: unknown, path: string): PatternRule {
       path,
     });
   }
+  if (
+    typeof item.message === 'string' &&
+    Buffer.byteLength(item.message, 'utf8') > MAX_RETAINED_MESSAGE_BYTES
+  ) {
+    throw new SurfaceGuardError(
+      'SG_CONFIG_INVALID',
+      `${path}.message exceeds the output-safe message limit`,
+      { path: `${path}.message`, limit: MAX_RETAINED_MESSAGE_BYTES },
+    );
+  }
   return item as unknown as PatternRule;
 }
 
@@ -132,6 +193,13 @@ function validateFileRule(value: unknown, path: string): FileRule {
       'SG_CONFIG_INVALID',
       `${path}.id has an invalid rule identifier`,
       { path },
+    );
+  }
+  if (Buffer.byteLength(item.id, 'utf8') > MAX_RETAINED_RULE_ID_BYTES) {
+    throw new SurfaceGuardError(
+      'SG_CONFIG_INVALID',
+      `${path}.id exceeds the output-safe identifier limit`,
+      { path: `${path}.id`, limit: MAX_RETAINED_RULE_ID_BYTES },
     );
   }
   if (typeof item.glob !== 'string' || item.glob.length === 0) {
@@ -151,6 +219,16 @@ function validateFileRule(value: unknown, path: string): FileRule {
       path,
     });
   }
+  if (
+    typeof item.message === 'string' &&
+    Buffer.byteLength(item.message, 'utf8') > MAX_RETAINED_MESSAGE_BYTES
+  ) {
+    throw new SurfaceGuardError(
+      'SG_CONFIG_INVALID',
+      `${path}.message exceeds the output-safe message limit`,
+      { path: `${path}.message`, limit: MAX_RETAINED_MESSAGE_BYTES },
+    );
+  }
   return item as unknown as FileRule;
 }
 
@@ -159,7 +237,7 @@ function validatePatternRules(value: unknown, path: string): PatternRule[] | und
   if (!Array.isArray(value)) {
     throw new SurfaceGuardError('SG_CONFIG_INVALID', `${path} must be an array`, { path });
   }
-  return value.map((item, index) => validatePatternRule(item, `${path}[${index}]`));
+  return Array.from(value, (item, index) => validatePatternRule(item, `${path}[${index}]`));
 }
 
 function validateFileRules(value: unknown, path: string): FileRule[] | undefined {
@@ -167,7 +245,7 @@ function validateFileRules(value: unknown, path: string): FileRule[] | undefined
   if (!Array.isArray(value)) {
     throw new SurfaceGuardError('SG_CONFIG_INVALID', `${path} must be an array`, { path });
   }
-  return value.map((item, index) => validateFileRule(item, `${path}[${index}]`));
+  return Array.from(value, (item, index) => validateFileRule(item, `${path}[${index}]`));
 }
 
 export function validatePolicy(value: unknown): SurfaceGuardPolicy {
@@ -210,14 +288,20 @@ export function validatePolicy(value: unknown): SurfaceGuardPolicy {
       path: '$.failOn',
     });
   }
-  strings(root.exclude, '$.exclude');
+  const globs: { glob: string; path: string }[] = [];
+  const patternRules: { rules: PatternRule[]; path: string }[] = [];
+  const exclude = strings(root.exclude, '$.exclude');
+  exclude?.forEach((glob, index) => globs.push({ glob, path: `$.exclude[${index}]` }));
 
   if (root.routes !== undefined) {
     const routes = record(root.routes, '$.routes');
     assertKnownKeys(routes, ['allow', 'deny', 'require'], '$.routes');
-    strings(routes.allow, '$.routes.allow');
-    strings(routes.deny, '$.routes.deny');
-    strings(routes.require, '$.routes.require');
+    for (const key of ['allow', 'deny', 'require'] as const) {
+      const routeGlobs = strings(routes[key], `$.routes.${key}`);
+      routeGlobs?.forEach((glob, index) =>
+        globs.push({ glob, path: `$.routes.${key}[${index}]` }),
+      );
+    }
   }
   if (root.sourceMaps !== undefined) {
     const maps = record(root.sourceMaps, '$.sourceMaps');
@@ -238,10 +322,15 @@ export function validatePolicy(value: unknown): SurfaceGuardPolicy {
   if (root.forbidden !== undefined) {
     const forbidden = record(root.forbidden, '$.forbidden');
     assertKnownKeys(forbidden, ['text', 'endpoints', 'metadata', 'files'], '$.forbidden');
-    validatePatternRules(forbidden.text, '$.forbidden.text');
-    validatePatternRules(forbidden.endpoints, '$.forbidden.endpoints');
-    validatePatternRules(forbidden.metadata, '$.forbidden.metadata');
-    validateFileRules(forbidden.files, '$.forbidden.files');
+    for (const key of ['text', 'endpoints', 'metadata'] as const) {
+      const path = `$.forbidden.${key}`;
+      const rules = validatePatternRules(forbidden[key], path);
+      if (rules) patternRules.push({ rules, path });
+    }
+    const fileRules = validateFileRules(forbidden.files, '$.forbidden.files');
+    fileRules?.forEach((rule, index) =>
+      globs.push({ glob: rule.glob, path: `$.forbidden.files[${index}].glob` }),
+    );
   }
   if (root.sitemap !== undefined) {
     const sitemap = record(root.sitemap, '$.sitemap');
@@ -275,12 +364,25 @@ export function validatePolicy(value: unknown): SurfaceGuardPolicy {
     assertKnownKeys(limits, Object.keys(DEFAULT_LIMITS), '$.limits');
     for (const [key, value] of Object.entries(limits)) {
       if (!Number.isSafeInteger(value) || (value as number) <= 0) {
+        const path = `$.limits.${key}`;
         throw new SurfaceGuardError(
           'SG_CONFIG_INVALID',
-          `$.limits.${key} must be a positive integer`,
+          `${path} must be a positive integer`,
+          { path },
         );
       }
     }
+  }
+
+  const limits: ScanLimits = {
+    ...DEFAULT_LIMITS,
+    ...(root.limits as Partial<ScanLimits> | undefined),
+  };
+  for (const { glob, path } of globs) validateGlob(glob, path, limits);
+  for (const { rules, path } of patternRules) {
+    rules.forEach((rule, index) =>
+      compilePatternRule(rule, limits, `${path}[${index}].pattern`),
+    );
   }
   return value as SurfaceGuardPolicy;
 }

@@ -10,7 +10,9 @@ The artifact directory is untrusted. It may contain malformed files, symlinks, u
 
 The policy is trusted configuration controlled by the team running the scan. SurfaceGuard validates its shape, bounds pattern length, and rejects obvious nested regex quantifiers. It does not attempt to prove every regular expression has linear runtime.
 
-Reports are sensitive outputs. Exact evidence is necessary for remediation, but it can repeat material that policy intended to exclude. Store reports and CI logs accordingly.
+Reports are sensitive outputs. Evidence is necessary for remediation, but even its
+bounded prefix can repeat material that policy intended to exclude. Store reports and CI
+logs accordingly.
 
 ## Controls
 
@@ -20,14 +22,26 @@ Reports are sensitive outputs. Exact evidence is necessary for remediation, but 
 - File traversal is sorted and bounded by entry, directory, depth, file, and byte counts.
 - Recognized files are opened without following the final path component, then their
   discovered identity, size, and timestamps are verified before and after bounded reads.
-- Manifest traversal, route evidence, and sitemap entries have cumulative ceilings.
+- Manifest traversal, route evidence, sitemap entries, robots directives, the
+  sitemap-by-robots comparison product, and total robots matching work have cumulative
+  ceilings.
 - URL decoding stops after a configured number of passes.
+- Canonical URLs are parsed without treating encoded absolute URLs as relative, and
+  robots comparisons retain query strings under RFC 9309-style octet normalization.
 - Malformed manifests become findings.
+- Sitemap `DOCTYPE` declarations fail closed because custom and external entities are not
+  expanded.
 - Recognized text artifacts accept valid UTF-8 or BOM-tagged UTF-16LE/BE. Invalid byte
   sequences, control bytes, unsupported BOMs, and detectable unsupported declarations
   produce `SG1003`, mark inspection incomplete, and still receive best-effort policy
   matching.
-- Unknown binary artifact kinds are not interpreted as text.
+- Valid text in unknown artifact kinds is eligible for applicable rules. Ambiguous
+  unknown content receives best-effort inspection and marks completeness accordingly; it
+  emits an encoding finding when explicitly scoped or predominantly textual. Recognized
+  binary extensions remain uninterpreted unless explicitly scoped to `unknown`.
+- Retained evidence is limited to 2,048 UTF-8 bytes with original length and digest
+  metadata. Markdown output is capped at 900 KiB, Action annotations at ten per severity
+  level, and SARIF uses encoded relative artifact URIs.
 - The library performs no network requests.
 
 ## Out of scope and limitations

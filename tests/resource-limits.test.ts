@@ -266,6 +266,74 @@ describe('resource ceilings', () => {
     ).rejects.toMatchObject({ code: 'SG_RESOURCE_LIMIT' });
   });
 
+  it('bounds robots directives before retaining an oversized rule set', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-rule-limit-'));
+    temporary.push(root);
+    await writeFile(join(root, 'robots.txt'), 'Disallow: /one\nDisallow: /two');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/public</loc></url></urlset>',
+    );
+    await expect(
+      scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          sitemap: { mode: 'if-present' },
+          limits: { maxRobotsRules: 1 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SG_RESOURCE_LIMIT' });
+  });
+
+  it('bounds the sitemap-by-robots comparison product', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-product-limit-'));
+    temporary.push(root);
+    await writeFile(join(root, 'robots.txt'), 'Disallow: /never-one\nDisallow: /never-two');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      [
+        '<urlset>',
+        '<url><loc>https://example.test/one</loc></url>',
+        '<url><loc>https://example.test/two</loc></url>',
+        '</urlset>',
+      ].join(''),
+    );
+    await expect(
+      scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          sitemap: { mode: 'if-present' },
+          limits: { maxRobotsComparisons: 2 },
+        },
+      }),
+    ).rejects.toMatchObject({
+      code: 'SG_RESOURCE_LIMIT',
+      details: { limit: 2, observed: 3 },
+    });
+  });
+
+  it('bounds cumulative characters examined by robots matching', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-work-limit-'));
+    temporary.push(root);
+    await writeFile(join(root, 'robots.txt'), 'Disallow: /never');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      `<urlset><url><loc>https://example.test/${'x'.repeat(100)}</loc></url></urlset>`,
+    );
+    await expect(
+      scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          sitemap: { mode: 'if-present' },
+          limits: { maxRobotsWork: 10 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SG_RESOURCE_LIMIT' });
+  });
+
   it('counts omitted filesystem findings in the completeness lower bound', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-finding-count-'));
     temporary.push(root);

@@ -197,6 +197,35 @@ describe('artifact scanning', () => {
     expect(result.failed).toBe(false);
   });
 
+  it('retains exact empty evidence for zero-width decoded regex matches', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-zero-width-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '%41', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: {
+          text: [
+            {
+              id: 'decoded-boundary',
+              pattern: '(?<=A)$',
+              match: 'regex',
+            },
+          ],
+        },
+      },
+    });
+    const boundary = result.findings.find(
+      (finding) => finding.ruleId === 'decoded-boundary',
+    );
+    expect(boundary).toMatchObject({
+      evidence: '',
+      transform: 'raw+percent',
+    });
+    expect(boundary?.location?.offset).toBe(3);
+  });
+
   it.each(['literal', 'regex'] as const)(
     'bounds repeated %s matches before allocating the complete match set',
     async (match) => {
@@ -354,6 +383,44 @@ describe('artifact scanning', () => {
     expect(result.findings).toContainEqual(
       expect.objectContaining({ ruleId: 'SG2002', evidence: '/private%FF' }),
     );
+  });
+
+  it('treats repeated leading slashes in manifests as route path separators', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-leading-slash-route-'));
+    temporary.push(root);
+    await mkdir(join(root, 'server'));
+    await writeFile(
+      join(root, 'server/pages-manifest.json'),
+      JSON.stringify({ '//private': 'private.js' }),
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        adapter: 'nextjs',
+        routes: { deny: ['/private'] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG2002', evidence: '/private' }),
+    );
+  });
+
+  it('retains separate raw evidence for repeated scalars in one percent run', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-percent-spans-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '%41%42%41', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'encoded-a', pattern: 'A' }] },
+      },
+    });
+    const matches = result.findings.filter((finding) => finding.ruleId === 'encoded-a');
+    expect(matches.map((finding) => finding.evidence)).toEqual(['%41', '%41']);
+    expect(matches.map((finding) => finding.location?.offset)).toEqual([0, 6]);
   });
 
   it('reports one encoding finding when an adapter reads an artifact twice', async () => {
@@ -557,7 +624,7 @@ describe('artifact scanning', () => {
         },
       },
     });
-    expect(result.findings.map((finding) => finding.evidence)).toEqual(['😀', 'x']);
+    expect(result.findings.map((finding) => finding.evidence)).toEqual(['', '']);
     expect(result.findings.map((finding) => finding.location?.offset)).toEqual([0, 2]);
   });
 
@@ -649,6 +716,137 @@ describe('artifact scanning', () => {
       );
     },
   );
+
+  it.each([
+    'https%3A%2F%2Fexample.test%2Fprivate',
+    'https%3A%252F%252Fexample.test%252Fprivate',
+  ])('evaluates encoded sitemap URL %s as a public route', async (encodedUrl) => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-encoded-sitemap-url-'));
+    temporary.push(root);
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      `<urlset><url><loc>${encodedUrl}</loc></url></urlset>`,
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        routes: { deny: ['/private'] },
+        sitemap: { mode: 'required', forbidDisallowedRoutes: true },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4004', evidence: '/private' }),
+    );
+  });
+
+  it('reconciles sitemap path and query values with robots matching semantics', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-rules-'));
+    temporary.push(root);
+    await writeFile(
+      join(root, 'robots.txt'),
+      [
+        'User-agent: *',
+        'Disallow: /private',
+        'Disallow: /exact$',
+        'Disallow: /%70ercent',
+        'Disallow: /search?private=1',
+        'Disallow: /wild*end$',
+      ].join('\n'),
+      'utf8',
+    );
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      [
+        '<urlset>',
+        '<url><loc>https://example.test/privateer</loc></url>',
+        '<url><loc>https://example.test/exact</loc></url>',
+        '<url><loc>https://example.test/percent</loc></url>',
+        '<url><loc>https://example.test/search?private=1</loc></url>',
+        '<url><loc>https://example.test/wild/nested/end</loc></url>',
+        '</urlset>',
+      ].join(''),
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+    expect(
+      new Set(
+        result.findings
+          .filter((finding) => finding.ruleId === 'SG4003')
+          .map((finding) => finding.evidence),
+      ),
+    ).toEqual(
+      new Set([
+        '/privateer',
+        '/exact',
+        '/percent',
+        '/search?private=1',
+        '/wild/nested/end',
+      ]),
+    );
+  });
+
+  it('reconciles sitemap routes after bare CR robots line endings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-bare-cr-'));
+    temporary.push(root);
+    await writeFile(join(root, 'robots.txt'), 'User-agent: *\rDisallow: /private', 'utf8');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/private</loc></url></urlset>',
+      'utf8',
+    );
+
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4003', evidence: '/private' }),
+    );
+  });
+
+  it('preserves reserved sitemap octets for exact robots rules', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-robots-reserved-'));
+    temporary.push(root);
+    await writeFile(join(root, 'robots.txt'), 'Disallow: /encoded%2Fslash');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/encoded%2Fslash</loc></url></urlset>',
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4003', evidence: '/encoded%2Fslash' }),
+    );
+  });
+
+  it('uses only the root robots file for sitemap reconciliation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-root-robots-'));
+    temporary.push(root);
+    await mkdir(join(root, 'a'));
+    await writeFile(join(root, 'a/robots.txt'), 'User-agent: *\nDisallow:', 'utf8');
+    await writeFile(join(root, 'robots.txt'), 'User-agent: *\nDisallow: /private', 'utf8');
+    await writeFile(
+      join(root, 'sitemap.xml'),
+      '<urlset><url><loc>https://example.test/private</loc></url></urlset>',
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4003', evidence: '/private' }),
+    );
+  });
 
   it('decodes a BOM-tagged UTF-16 gzip sitemap before policy evaluation', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-utf16-'));

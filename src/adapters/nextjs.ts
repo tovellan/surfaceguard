@@ -12,12 +12,18 @@ import type {
 } from '../types.js';
 
 const NEXT_MANIFESTS = new Set([
+  'app-path-routes-manifest.json',
   'app-paths-manifest.json',
   'build-manifest.json',
   'pages-manifest.json',
   'prerender-manifest.json',
   'routes-manifest.json',
 ]);
+const NEXT_INTERNAL_APP_ROUTES = new Set(['/_global-error', '/_not-found']);
+
+export function isNextManifest(relativePath: string): boolean {
+  return NEXT_MANIFESTS.has(basename(relativePath));
+}
 
 function addRoute(
   routes: RouteEvidence[],
@@ -61,14 +67,81 @@ function normalizeAppPath(route: string): string | undefined {
     if (segment) publicSegments.push(segment);
   }
 
-  if (publicSegments.includes('_not-found')) return undefined;
-  return publicSegments.length > 0 ? `/${publicSegments.join('/')}` : '/';
+  const normalized = publicSegments.length > 0 ? `/${publicSegments.join('/')}` : '/';
+  return NEXT_INTERNAL_APP_ROUTES.has(normalized) ? undefined : normalized;
+}
+
+function normalizeAppRoute(route: string): string | undefined {
+  return NEXT_INTERNAL_APP_ROUTES.has(route) ? undefined : route;
 }
 
 function objectValue(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined;
+}
+
+function objectSection(
+  root: Record<string, unknown>,
+  section: string,
+  manifest: string,
+): Record<string, unknown> | undefined {
+  const value = root[section];
+  if (value === undefined) return undefined;
+  const object = objectValue(value);
+  if (!object) throw new TypeError(`${manifest} ${section} must be an object`);
+  return object;
+}
+
+function objectArraySection(
+  root: Record<string, unknown>,
+  section: string,
+  manifest: string,
+): Record<string, unknown>[] | undefined {
+  const value = root[section];
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.some((entry) => objectValue(entry) === undefined)) {
+    throw new TypeError(`${manifest} ${section} must be an array of objects`);
+  }
+  return value as Record<string, unknown>[];
+}
+
+function requiredRoute(value: unknown, location: string): string {
+  if (typeof value !== 'string' || value.length === 0 || !value.startsWith('/')) {
+    throw new TypeError(`${location} must name a non-empty absolute route string`);
+  }
+  return value;
+}
+
+function rewriteSections(
+  root: Record<string, unknown>,
+  manifest: string,
+): readonly { group?: string; entries: Record<string, unknown>[] }[] {
+  const value = root.rewrites;
+  if (value === undefined) return [];
+  if (Array.isArray(value)) {
+    if (value.some((entry) => objectValue(entry) === undefined)) {
+      throw new TypeError(`${manifest} rewrites must be an array of objects`);
+    }
+    return [{ entries: value as Record<string, unknown>[] }];
+  }
+  const groups = objectValue(value);
+  if (!groups) {
+    throw new TypeError(`${manifest} rewrites must be an array or grouped object`);
+  }
+  const sections: { group: string; entries: Record<string, unknown>[] }[] = [];
+  for (const group of ['beforeFiles', 'afterFiles', 'fallback']) {
+    const entries = groups[group];
+    if (entries === undefined) continue;
+    if (
+      !Array.isArray(entries) ||
+      entries.some((entry) => objectValue(entry) === undefined)
+    ) {
+      throw new TypeError(`${manifest} rewrites.${group} must be an array of objects`);
+    }
+    sections.push({ group, entries: entries as Record<string, unknown>[] });
+  }
+  return sections;
 }
 
 function collectNextRoutes(
@@ -94,8 +167,22 @@ function collectNextRoutes(
     );
     return;
   }
+  if (name === 'app-path-routes-manifest.json') {
+    Object.entries(root).forEach(([appPath, route]) =>
+      addRoute(
+        routes,
+        seen,
+        requiredRoute(route, `${name} ${appPath}`),
+        file,
+        `/${appPath}`,
+        budget,
+        normalizeAppRoute,
+      ),
+    );
+    return;
+  }
   if (name === 'build-manifest.json') {
-    const pages = objectValue(root.pages);
+    const pages = objectSection(root, 'pages', name);
     Object.keys(pages ?? {}).forEach((route) =>
       addRoute(routes, seen, route, file, `/pages/${route}`, budget),
     );
@@ -103,7 +190,7 @@ function collectNextRoutes(
   }
   if (name === 'prerender-manifest.json') {
     for (const section of ['routes', 'dynamicRoutes'] as const) {
-      const entries = objectValue(root[section]);
+      const entries = objectSection(root, section, name);
       Object.keys(entries ?? {}).forEach((route) =>
         addRoute(routes, seen, route, file, `/${section}/${route}`, budget),
       );
@@ -116,38 +203,39 @@ function collectNextRoutes(
       'dynamicRoutes',
       'dataRoutes',
       'redirects',
-      'rewrites',
     ] as const) {
-      const entries = root[section];
-      if (Array.isArray(entries)) {
-        entries.forEach((entry, index) => {
-          const candidate = objectValue(entry);
-          addRoute(
-            routes,
-            seen,
-            candidate?.page ?? candidate?.source ?? candidate?.pathname,
-            file,
-            `/${section}/${index}`,
-            budget,
-          );
-        });
-      } else if (section === 'rewrites') {
-        const groups = objectValue(entries);
-        for (const [group, groupEntries] of Object.entries(groups ?? {})) {
-          if (!Array.isArray(groupEntries)) continue;
-          groupEntries.forEach((entry, index) => {
-            const candidate = objectValue(entry);
-            addRoute(
-              routes,
-              seen,
-              candidate?.source,
-              file,
-              `/rewrites/${group}/${index}`,
-              budget,
-            );
-          });
-        }
-      }
+      const entries = objectArraySection(root, section, name) ?? [];
+      entries.forEach((candidate, index) => {
+        const location = `${name} ${section}[${index}]`;
+        addRoute(
+          routes,
+          seen,
+          requiredRoute(
+            section === 'redirects'
+              ? candidate.source
+              : (candidate.page ?? candidate.source ?? candidate.pathname),
+            location,
+          ),
+          file,
+          `/${section}/${index}`,
+          budget,
+        );
+      });
+    }
+    for (const rewrite of rewriteSections(root, name)) {
+      rewrite.entries.forEach((candidate, index) => {
+        const location = rewrite.group
+          ? `${name} rewrites.${rewrite.group}[${index}]`
+          : `${name} rewrites[${index}]`;
+        addRoute(
+          routes,
+          seen,
+          requiredRoute(candidate.source, location),
+          file,
+          rewrite.group ? `/rewrites/${rewrite.group}/${index}` : `/rewrites/${index}`,
+          budget,
+        );
+      });
     }
   }
 }

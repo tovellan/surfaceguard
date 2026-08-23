@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import fc from 'fast-check';
 
 import { canonicalizeUrl, decodeTextVariants, repeatedlyDecodeUrl } from '../src/decode.js';
-import { parseSitemap } from '../src/sitemap.js';
+import { matchesRobotsRule, parseRobots, parseSitemap } from '../src/sitemap.js';
 
 describe('URL decoding and canonicalization', () => {
   it('decodes repeated percent encoding with a configured bound', () => {
@@ -15,12 +15,32 @@ describe('URL decoding and canonicalization', () => {
 
   it('canonicalizes paths and absolute URLs', () => {
     expect(canonicalizeUrl('/a//b/../c#fragment')).toBe('/a/c');
+    expect(canonicalizeUrl('//private')).toBe('/private');
+    expect(canonicalizeUrl('///private')).toBe('/private');
     expect(canonicalizeUrl('HTTPS://PUBLIC.EXAMPLE:443/a')).toBe(
       'https://public.example/a',
     );
     expect(canonicalizeUrl('/docs/a%23b%3Fc.html')).toBe('/docs/a%23b%3Fc.html');
     expect(canonicalizeUrl('%252Fprivate')).toBe('/private');
     expect(canonicalizeUrl('/%2Fprivate%FF')).toBe('/private%FF');
+  });
+
+  it('recognizes bounded percent-encoded absolute URLs before parsing structure', () => {
+    expect(canonicalizeUrl('https%3A%2F%2Fpublic.example%2Fprivate')).toBe(
+      'https://public.example/private',
+    );
+    expect(canonicalizeUrl('https%253A%252F%252Fpublic.example%252Fprivate')).toBe(
+      'https://public.example/private',
+    );
+    expect(canonicalizeUrl('https%3A%252F%252Fpublic.example%252Fprivate')).toBe(
+      'https://public.example/private',
+    );
+    expect(canonicalizeUrl('https:%2F%2Fpublic.example%2Fprivate')).toBe(
+      'https://public.example/private',
+    );
+    expect(
+      canonicalizeUrl('https%3A%2F%2Fpublic.example%2Fdocs%2Fa%2523b%253Fc.html'),
+    ).toBe('https://public.example/docs/a%23b%3Fc.html');
   });
 
   it('preserves raw source spans through JavaScript and percent decoding', () => {
@@ -33,14 +53,25 @@ describe('URL decoding and canonicalization', () => {
     expect(source.slice(slash?.start, slash?.end)).toBe('\\x2f');
   });
 
+  it('decodes JavaScript code-point escapes with exact raw spans', () => {
+    const source = '\\u{1F600}\\u{49}NTERNAL_ONLY';
+    const decoded = decodeTextVariants(source, 3).at(-1);
+    expect(decoded?.text).toBe('😀INTERNAL_ONLY');
+    expect(decoded?.spans.slice(0, 2)).toEqual([
+      { start: 0, end: 9 },
+      { start: 0, end: 9 },
+    ]);
+    expect(source.slice(decoded?.spans[2]?.start, decoded?.spans[2]?.end)).toBe('\\u{49}');
+  });
+
   it.each([
-    ['%41%42', 'AB', 0, 6],
-    ['%C3%A9%41', 'éA', 0, 9],
-    ['%F0%9F%98%80%41', '😀A', 0, 15],
+    ['%41%42', 'AB', 0, 3],
+    ['%C3%A9%41', 'éA', 0, 6],
+    ['%F0%9F%98%80%41', '😀A', 0, 12],
     ['%FF%C3%A9', '%FFé', 3, 9],
     ['%C3%A9%FF%49', 'é%FFI', 9, 12],
     ['%E2%28%A1%41', '%E2(%A1A', 9, 12],
-    ['%EF%BB%BF%41', 'A', 0, 12],
+    ['%EF%BB%BF%41', 'A', 9, 12],
   ])('decodes valid UTF-8 segments in %s', (source, expected, decodedStart, decodedEnd) => {
     const decoded = decodeTextVariants(source, 1).at(-1);
     expect(decoded?.text).toBe(expected);
@@ -51,6 +82,16 @@ describe('URL decoding and canonicalization', () => {
       start: decodedStart,
       end: decodedEnd,
     });
+  });
+
+  it('maps each decoded scalar to only its own percent-encoded bytes', () => {
+    const decoded = decodeTextVariants('%41%42%41', 1).at(-1);
+    expect(decoded?.text).toBe('ABA');
+    expect(decoded?.spans).toEqual([
+      { start: 0, end: 3 },
+      { start: 3, end: 6 },
+      { start: 6, end: 9 },
+    ]);
   });
 
   it('decodes long malformed percent runs without retrying suffixes', () => {
@@ -155,9 +196,92 @@ describe('URL decoding and canonicalization', () => {
     expect(parseSitemap(sitemap, 3, { maxEntries: 10 }).routes).not.toContain('/private');
   });
 
+  it('reads namespaced location text across comments, processing instructions, and CDATA', () => {
+    const sitemap = [
+      '<sm:urlset xmlns:sm="http://www.sitemaps.org/schemas/sitemap/0.9">',
+      '<sm:url><sm:loc marker=">">https://public.example/pri',
+      '<!-- ignored --><?ignored value?><![CDATA[vate]]>',
+      '</sm:loc></sm:url></sm:urlset>',
+    ].join('');
+    expect(parseSitemap(sitemap, 3, { maxEntries: 10 })).toEqual({
+      routes: ['/private'],
+      robotsPaths: ['/private'],
+      entriesVisited: 1,
+    });
+  });
+
+  it('preserves reserved percent octets for robots reconciliation', () => {
+    const sitemap =
+      '<urlset><url><loc>https://public.example/encoded%2Fslash?q=a%2Fb</loc></url></urlset>';
+    expect(parseSitemap(sitemap, 3, { maxEntries: 10 })).toMatchObject({
+      routes: ['/encoded/slash?q=a%2Fb'],
+      robotsPaths: ['/encoded%2Fslash?q=a%2Fb'],
+    });
+  });
+
+  it('fails closed on sitemap DOCTYPE declarations that could define custom entities', () => {
+    const sitemap = [
+      '<!DOCTYPE urlset [<!ENTITY private "private">]>',
+      '<urlset><url><loc>https://public.example/&private;</loc></url></urlset>',
+    ].join('');
+    expect(() => parseSitemap(sitemap, 3, { maxEntries: 10 })).toThrow(
+      expect.objectContaining({ code: 'SG_IO_ERROR' }),
+    );
+  });
+
+  it.each([
+    ['/privateer', '/private'],
+    ['/private', '/private$'],
+    ['/percent', '/%70ercent'],
+    ['/search?private=1', '/search?private=1'],
+    ['/query?token=value', '/query?token=%76alue$'],
+    ['/wild/nested/end', '/wild*end$'],
+  ])('matches robots path %s against %s', (pathAndQuery, rule) => {
+    expect(matchesRobotsRule(pathAndQuery, rule)).toBe(true);
+  });
+
+  it.each([
+    ['/private/child', '/private$'],
+    ['/encoded/slash', '/encoded%2Fslash'],
+    ['/wild/nested/end/more', '/wild*end$'],
+  ])('does not match robots path %s against %s', (pathAndQuery, rule) => {
+    expect(matchesRobotsRule(pathAndQuery, rule)).toBe(false);
+  });
+
+  it('parses a long blank robots file without materializing all lines', () => {
+    expect(parseRobots('\n'.repeat(1_000_000))).toEqual({
+      disallow: [],
+      sitemaps: [],
+    });
+  });
+
+  it('parses bare CR, LF, and CRLF robots line endings', () => {
+    expect(
+      parseRobots(
+        'User-agent: *\rDisallow: /bare-cr\nDisallow: /lf\r\nSitemap: /sitemap.xml',
+      ),
+    ).toEqual({
+      disallow: ['/bare-cr', '/lf'],
+      sitemaps: ['/sitemap.xml'],
+    });
+  });
+
+  it('bounds retained robots directives', () => {
+    expect(() => parseRobots('Disallow: /one\nDisallow: /two', { maxRules: 1 })).toThrow(
+      expect.objectContaining({ code: 'SG_RESOURCE_LIMIT' }),
+    );
+  });
+
+  it('bounds robots directive length before retaining or comparing it', () => {
+    expect(() =>
+      parseRobots(`Disallow: /${'x'.repeat(20)}`, { maxRuleLength: 10 }),
+    ).toThrow(expect.objectContaining({ code: 'SG_RESOURCE_LIMIT' }));
+  });
+
   it('scans malformed repeated sitemap tags in one forward pass', () => {
     expect(parseSitemap('<loc>'.repeat(20_000), 3, { maxEntries: 20_000 })).toEqual({
       routes: [],
+      robotsPaths: [],
       entriesVisited: 0,
     });
   });

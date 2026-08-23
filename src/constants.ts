@@ -1,6 +1,6 @@
 import type { ScanLimits } from './types.js';
 
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 
 export const DEFAULT_LIMITS: Readonly<ScanLimits> = Object.freeze({
   maxEntries: 100_000,
@@ -12,6 +12,9 @@ export const DEFAULT_LIMITS: Readonly<ScanLimits> = Object.freeze({
   maxRoutes: 50_000,
   maxManifestEntries: 100_000,
   maxSitemapEntries: 50_000,
+  maxRobotsRules: 50_000,
+  maxRobotsComparisons: 1_000_000,
+  maxRobotsWork: 64 * 1024 * 1024,
   maxFindings: 1_000,
   maxDecodePasses: 3,
   maxPatternLength: 1_024,

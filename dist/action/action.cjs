@@ -3,6 +3,166 @@
 // src/action.ts
 var import_promises3 = require("fs/promises");
 
+// src/output-safety.ts
+var import_node_crypto = require("crypto");
+var MAX_RETAINED_EVIDENCE_BYTES = 2048;
+var MAX_RETAINED_MESSAGE_BYTES = 2048;
+var MAX_RETAINED_RULE_ID_BYTES = 255;
+var MAX_MARKDOWN_REPORT_BYTES = 900 * 1024;
+var BIDI_CONTROLS = /* @__PURE__ */ new Set([
+  1564,
+  8206,
+  8207,
+  8234,
+  8235,
+  8236,
+  8237,
+  8238,
+  8294,
+  8295,
+  8296,
+  8297
+]);
+function visibleEscape(codePoint) {
+  if (codePoint === 9) return "\\t";
+  if (codePoint === 10) return "\\n";
+  if (codePoint === 13) return "\\r";
+  return `\\u{${codePoint.toString(16).toUpperCase().padStart(4, "0")}}`;
+}
+function printableText(value) {
+  let output = "";
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 31 || codePoint >= 127 && codePoint <= 159 || codePoint === 8232 || codePoint === 8233 || BIDI_CONTROLS.has(codePoint)) {
+      output += visibleEscape(codePoint);
+    } else {
+      output += character;
+    }
+  }
+  return output;
+}
+function isAsciiPunctuation(codePoint) {
+  return codePoint >= 33 && codePoint <= 47 || codePoint >= 58 && codePoint <= 64 || codePoint >= 91 && codePoint <= 96 || codePoint >= 123 && codePoint <= 126;
+}
+function markdownCell(value) {
+  let output = "";
+  for (const character of printableText(value)) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    output += isAsciiPunctuation(codePoint) ? `&#x${codePoint.toString(16).toUpperCase()};` : character;
+  }
+  return output;
+}
+function utf8Prefix(value, maximumBytes) {
+  let bytes = 0;
+  let end = 0;
+  for (const character of value) {
+    const width = Buffer.byteLength(character, "utf8");
+    if (bytes + width > maximumBytes) break;
+    bytes += width;
+    end += character.length;
+  }
+  return value.slice(0, end);
+}
+function boundOutputText(value, maximumBytes) {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return value;
+  const digest = (0, import_node_crypto.createHash)("sha256").update(value).digest("hex");
+  const suffix = ` ... [truncated sha256:${digest}]`;
+  const prefixBytes = Math.max(0, maximumBytes - Buffer.byteLength(suffix, "utf8"));
+  return `${utf8Prefix(value, prefixBytes)}${suffix}`;
+}
+function boundFindingEvidence(finding) {
+  const ruleId = boundOutputText(finding.ruleId, MAX_RETAINED_RULE_ID_BYTES);
+  const message = boundOutputText(finding.message, MAX_RETAINED_MESSAGE_BYTES);
+  const bounded = ruleId === finding.ruleId && message === finding.message ? finding : { ...finding, ruleId, message };
+  if (bounded.evidence === void 0) return bounded;
+  const evidenceBytes = Buffer.byteLength(bounded.evidence, "utf8");
+  if (evidenceBytes <= MAX_RETAINED_EVIDENCE_BYTES) return bounded;
+  return {
+    ...bounded,
+    evidence: utf8Prefix(bounded.evidence, MAX_RETAINED_EVIDENCE_BYTES),
+    evidenceTruncated: true,
+    evidenceBytes: bounded.evidenceBytes ?? evidenceBytes,
+    evidenceSha256: bounded.evidenceSha256 ?? (0, import_node_crypto.createHash)("sha256").update(bounded.evidence).digest("hex")
+  };
+}
+function displayEvidence(finding) {
+  const bounded = boundFindingEvidence(finding);
+  const value = bounded.evidence ?? bounded.message;
+  return bounded.evidenceTruncated ? `${value} ... [truncated from ${bounded.evidenceBytes ?? "unknown"} UTF-8 bytes]` : value;
+}
+function encodeUriSegment(segment) {
+  let output = "";
+  for (const byte of Buffer.from(segment, "utf8")) {
+    const unreserved2 = byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte >= 48 && byte <= 57 || byte === 45 || byte === 46 || byte === 95 || byte === 126;
+    output += unreserved2 ? String.fromCharCode(byte) : `%${byte.toString(16).toUpperCase().padStart(2, "0")}`;
+  }
+  return output;
+}
+function relativeSarifUri(artifactPath) {
+  const encoded = artifactPath.split("/").map(encodeUriSegment).join("/");
+  if (!encoded) return "./";
+  return encoded.startsWith("/") ? `.${encoded}` : encoded;
+}
+
+// src/action-output.ts
+var MAX_ANNOTATIONS_PER_LEVEL = 10;
+function annotationLevel(finding) {
+  return finding.severity === "error" ? "error" : finding.severity === "warning" ? "warning" : "notice";
+}
+function commandData(value) {
+  return printableText(value).replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
+}
+function commandProperty(value) {
+  return commandData(value).replaceAll(":", "%3A").replaceAll(",", "%2C");
+}
+function annotationCommand(finding) {
+  const bounded = boundFindingEvidence(finding);
+  const level = annotationLevel(bounded);
+  const properties = [
+    `title=${commandProperty(bounded.ruleId)}`,
+    `file=${commandProperty(bounded.artifactPath)}`
+  ];
+  if (bounded.location) {
+    properties.push(`line=${bounded.location.line}`, `col=${bounded.location.column}`);
+  }
+  return `::${level} ${properties.join(",")}::${commandData(`${bounded.message}: ${displayEvidence(bounded)}`)}
+`;
+}
+function annotationCommands(findings) {
+  const used = { error: 0, warning: 0, notice: 0 };
+  const omitted = { error: 0, warning: 0, notice: 0 };
+  const selected = [];
+  for (const finding of findings) {
+    const level = annotationLevel(finding);
+    if (used[level] < MAX_ANNOTATIONS_PER_LEVEL) {
+      used[level] += 1;
+      selected.push({ finding, level });
+    } else {
+      omitted[level] += 1;
+    }
+  }
+  let omittedTotal = omitted.error + omitted.warning + omitted.notice;
+  if (omittedTotal > 0 && used.notice === MAX_ANNOTATIONS_PER_LEVEL) {
+    for (let index = selected.length - 1; index >= 0; index -= 1) {
+      if (selected[index]?.level !== "notice") continue;
+      selected.splice(index, 1);
+      used.notice -= 1;
+      omitted.notice += 1;
+      omittedTotal += 1;
+      break;
+    }
+  }
+  const commands = selected.map((item) => annotationCommand(item.finding));
+  if (omittedTotal > 0) {
+    const message = `SurfaceGuard omitted ${omittedTotal} finding annotation(s) to bound log output (errors: ${omitted.error}, warnings: ${omitted.warning}, notices: ${omitted.notice}). See the job summary or SARIF for retained details.`;
+    commands.push(
+      `::notice title=${commandProperty("SurfaceGuard annotation limit")}::${commandData(message)}
+`
+    );
+  }
+  return commands;
+}
+
 // src/errors.ts
 var SurfaceGuardError = class extends Error {
   code;
@@ -36,7 +196,7 @@ var import_promises = require("fs/promises");
 var import_node_path = require("path");
 
 // src/constants.ts
-var VERSION = "0.5.0";
+var VERSION = "0.5.1";
 var DEFAULT_LIMITS = Object.freeze({
   maxEntries: 1e5,
   maxDirectories: 1e4,
@@ -47,10 +207,477 @@ var DEFAULT_LIMITS = Object.freeze({
   maxRoutes: 5e4,
   maxManifestEntries: 1e5,
   maxSitemapEntries: 5e4,
+  maxRobotsRules: 5e4,
+  maxRobotsComparisons: 1e6,
+  maxRobotsWork: 64 * 1024 * 1024,
   maxFindings: 1e3,
   maxDecodePasses: 3,
   maxPatternLength: 1024
 });
+
+// src/glob.ts
+var REGEX_SPECIAL = /* @__PURE__ */ new Set(["\\", "^", "$", ".", "+", "(", ")", "|", "{", "}"]);
+function globToRegExp(glob) {
+  let source = "^";
+  for (let index = 0; index < glob.length; index += 1) {
+    const character = glob[index] ?? "";
+    if (character === "*") {
+      if (glob[index + 1] === "*") {
+        index += 1;
+        if (glob[index + 1] === "/") {
+          index += 1;
+          source += "(?:.*/)?";
+        } else {
+          source += ".*";
+        }
+      } else {
+        source += "[^/]*";
+      }
+    } else if (character === "?") {
+      source += "[^/]";
+    } else if (character === "[") {
+      const end = glob.indexOf("]", index + 1);
+      if (end > index + 1) {
+        const content = glob.slice(index + 1, end).replace(/^!/u, "^");
+        source += `[${content.replaceAll("\\", "\\\\")}]`;
+        index = end;
+      } else {
+        source += "\\[";
+      }
+    } else {
+      source += REGEX_SPECIAL.has(character) ? `\\${character}` : character;
+    }
+  }
+  return new RegExp(`${source}$`, "u");
+}
+function matchesGlob(value, glob) {
+  return globToRegExp(glob).test(value);
+}
+
+// src/decode.ts
+var IDENTITY_SPAN_VARIANTS = /* @__PURE__ */ new WeakSet();
+function identitySpans(text) {
+  return Array.from({ length: text.length }, (_, index) => ({
+    start: index,
+    end: index + 1
+  }));
+}
+function sourceSpanAt(input2, index) {
+  return IDENTITY_SPAN_VARIANTS.has(input2) ? { start: index, end: index + 1 } : input2.spans[index];
+}
+function originalSourceLength(input2) {
+  return input2.sourceLength ?? input2.spans.at(-1)?.end ?? input2.text.length;
+}
+function decodeHexEscapes(input2) {
+  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}|u\{[0-9a-f]{1,6}\})/iu.test(input2.text))
+    return void 0;
+  let output = "";
+  const spans = [];
+  let changed = false;
+  for (let index = 0; index < input2.text.length; index += 1) {
+    const escaped = input2.text[index] === "\\";
+    const short = escaped ? /^\\x([0-9a-f]{2})/iu.exec(input2.text.slice(index)) : null;
+    const long = escaped ? /^\\u([0-9a-f]{4})/iu.exec(input2.text.slice(index)) : null;
+    const braced = escaped ? /^\\u\{([0-9a-f]{1,6})\}/iu.exec(input2.text.slice(index)) : null;
+    const bracedCodePoint = braced?.[1] ? Number.parseInt(braced[1], 16) : void 0;
+    const match = bracedCodePoint !== void 0 && bracedCodePoint <= 1114111 ? braced : long ?? short;
+    if (match?.[1]) {
+      const width = match[0].length;
+      const decoded = String.fromCodePoint(Number.parseInt(match[1], 16));
+      output += decoded;
+      const first = sourceSpanAt(input2, index);
+      const last = sourceSpanAt(input2, index + width - 1);
+      if (first && last) {
+        const span2 = { start: first.start, end: last.end };
+        spans.push(span2);
+        if (decoded.length === 2) spans.push(span2);
+      }
+      index += width - 1;
+      changed = true;
+      continue;
+    }
+    output += input2.text[index] ?? "";
+    const span = sourceSpanAt(input2, index);
+    if (span) spans.push(span);
+  }
+  return changed ? {
+    text: output,
+    spans,
+    sourceLength: originalSourceLength(input2),
+    transform: `${input2.transform}+js-hex`
+  } : void 0;
+}
+function hexNibble(code) {
+  if (code >= 48 && code <= 57) return code - 48;
+  const folded = code | 32;
+  return folded >= 97 && folded <= 102 ? folded - 87 : -1;
+}
+function isContinuation(byte) {
+  return byte >= 128 && byte <= 191;
+}
+function isValidUtf8Scalar(bytes, start, end) {
+  const length = end - start;
+  const lead = bytes[start] ?? 0;
+  if (length === 2) {
+    return lead >= 194 && lead <= 223 && isContinuation(bytes[start + 1] ?? 0);
+  }
+  if (length === 3 && isContinuation(bytes[start + 2] ?? 0)) {
+    const second = bytes[start + 1] ?? 0;
+    return lead === 224 && second >= 160 && second <= 191 || lead >= 225 && lead <= 236 && isContinuation(second) || lead === 237 && second >= 128 && second <= 159 || lead >= 238 && lead <= 239 && isContinuation(second);
+  }
+  if (length === 4 && isContinuation(bytes[start + 2] ?? 0) && isContinuation(bytes[start + 3] ?? 0)) {
+    const second = bytes[start + 1] ?? 0;
+    return lead === 240 && second >= 144 && second <= 191 || lead >= 241 && lead <= 243 && isContinuation(second) || lead === 244 && second >= 128 && second <= 143;
+  }
+  return false;
+}
+function utf8ScalarWidth(bytes, start) {
+  const lead = bytes[start] ?? 0;
+  if (lead <= 127) return 1;
+  for (const width of [2, 3, 4]) {
+    if (start + width <= bytes.length && isValidUtf8Scalar(bytes, start, start + width)) {
+      return width;
+    }
+  }
+  return 0;
+}
+function utf8CodePoint(bytes, start, width) {
+  const first = bytes[start] ?? 0;
+  if (width === 1) return first;
+  if (width === 2) return (first & 31) << 6 | (bytes[start + 1] ?? 0) & 63;
+  if (width === 3) {
+    return (first & 15) << 12 | ((bytes[start + 1] ?? 0) & 63) << 6 | (bytes[start + 2] ?? 0) & 63;
+  }
+  return (first & 7) << 18 | ((bytes[start + 1] ?? 0) & 63) << 12 | ((bytes[start + 2] ?? 0) & 63) << 6 | (bytes[start + 3] ?? 0) & 63;
+}
+function decodePercent(input2) {
+  if (!/%[0-9a-f]{2}/iu.test(input2.text)) return void 0;
+  const output = [];
+  const spans = [];
+  let changed = false;
+  for (let index = 0; index < input2.text.length; ) {
+    const first = hexNibble(input2.text.charCodeAt(index + 1));
+    const second = hexNibble(input2.text.charCodeAt(index + 2));
+    if (input2.text[index] !== "%" || first < 0 || second < 0) {
+      output.push(input2.text[index] ?? "");
+      const span = sourceSpanAt(input2, index);
+      if (span) spans.push(span);
+      index += 1;
+      continue;
+    }
+    const runStart = index;
+    while (input2.text[index] === "%" && hexNibble(input2.text.charCodeAt(index + 1)) >= 0 && hexNibble(input2.text.charCodeAt(index + 2)) >= 0) {
+      index += 3;
+    }
+    const runEnd = index;
+    const bytes = new Uint8Array((runEnd - runStart) / 3);
+    for (let offset = 0; offset < bytes.length; offset += 1) {
+      const raw = runStart + offset * 3;
+      bytes[offset] = hexNibble(input2.text.charCodeAt(raw + 1)) << 4 | hexNibble(input2.text.charCodeAt(raw + 2));
+    }
+    for (let byteIndex = 0; byteIndex < bytes.length; ) {
+      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
+      if (firstWidth === 0) {
+        const rawStart = runStart + byteIndex * 3;
+        for (let raw = rawStart; raw < rawStart + 3; raw += 1) {
+          output.push(input2.text[raw] ?? "");
+          const span = sourceSpanAt(input2, raw);
+          if (span) spans.push(span);
+        }
+        byteIndex += 1;
+        continue;
+      }
+      const segmentStart = byteIndex;
+      byteIndex += firstWidth;
+      while (byteIndex < bytes.length) {
+        const width = utf8ScalarWidth(bytes, byteIndex);
+        if (width === 0) break;
+        byteIndex += width;
+      }
+      const segmentEnd = byteIndex;
+      let scalar = segmentStart;
+      let firstScalar = true;
+      while (scalar < segmentEnd) {
+        const scalarStart = scalar;
+        const width = utf8ScalarWidth(bytes, scalar);
+        const codePoint = utf8CodePoint(bytes, scalar, width);
+        scalar += width;
+        if (firstScalar && codePoint === 65279) {
+          firstScalar = false;
+          continue;
+        }
+        firstScalar = false;
+        const rawStart = runStart + scalarStart * 3;
+        const rawEnd = runStart + scalar * 3;
+        const decodedFirst = sourceSpanAt(input2, rawStart);
+        const decodedLast = sourceSpanAt(input2, rawEnd - 1);
+        if (!decodedFirst || !decodedLast) continue;
+        const decodedSpan = { start: decodedFirst.start, end: decodedLast.end };
+        const decoded = String.fromCodePoint(codePoint);
+        output.push(decoded);
+        spans.push(decodedSpan);
+        if (decoded.length === 2) {
+          spans.push(decodedSpan);
+        }
+      }
+      changed = true;
+    }
+  }
+  return changed ? {
+    text: output.join(""),
+    spans,
+    sourceLength: originalSourceLength(input2),
+    transform: `${input2.transform}+percent`
+  } : void 0;
+}
+function variantsForText(text, maxPasses, materializeIdentitySpans) {
+  const original = {
+    text,
+    spans: materializeIdentitySpans ? identitySpans(text) : [],
+    sourceLength: text.length,
+    transform: "raw"
+  };
+  if (!materializeIdentitySpans) IDENTITY_SPAN_VARIANTS.add(original);
+  const variants = [original];
+  let current = decodeHexEscapes(original) ?? original;
+  if (current !== original) variants.push(current);
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const next = decodePercent(current);
+    if (!next || next.text === current.text) break;
+    variants.push(next);
+    current = next;
+    const withHex = decodeHexEscapes(current);
+    if (withHex && withHex.text !== current.text) {
+      variants.push(withHex);
+      current = withHex;
+    }
+  }
+  return variants;
+}
+function decodeTextVariantsForMatching(text, maxPasses) {
+  return variantsForText(text, maxPasses, false);
+}
+function rawSpanForMatch(variant, start, length) {
+  if (length === 0) {
+    if (IDENTITY_SPAN_VARIANTS.has(variant)) return { start, end: start };
+    if (start === 0 && variant.text.length === 0) {
+      const boundary2 = originalSourceLength(variant);
+      return { start: boundary2, end: boundary2 };
+    }
+    const boundary = start < variant.text.length ? sourceSpanAt(variant, start)?.start : sourceSpanAt(variant, start - 1)?.end;
+    return boundary === void 0 ? void 0 : { start: boundary, end: boundary };
+  }
+  const first = sourceSpanAt(variant, start);
+  const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
+  return first && last ? { start: first.start, end: last.end } : void 0;
+}
+function decodePercentText(text) {
+  if (!/%[0-9a-f]{2}/iu.test(text)) return void 0;
+  const output = [];
+  let changed = false;
+  for (let index = 0; index < text.length; ) {
+    if (text[index] !== "%" || hexNibble(text.charCodeAt(index + 1)) < 0 || hexNibble(text.charCodeAt(index + 2)) < 0) {
+      output.push(text[index] ?? "");
+      index += 1;
+      continue;
+    }
+    const runStart = index;
+    while (text[index] === "%" && hexNibble(text.charCodeAt(index + 1)) >= 0 && hexNibble(text.charCodeAt(index + 2)) >= 0) {
+      index += 3;
+    }
+    const bytes = new Uint8Array((index - runStart) / 3);
+    for (let offset = 0; offset < bytes.length; offset += 1) {
+      const raw = runStart + offset * 3;
+      bytes[offset] = hexNibble(text.charCodeAt(raw + 1)) << 4 | hexNibble(text.charCodeAt(raw + 2));
+    }
+    for (let byteIndex = 0; byteIndex < bytes.length; ) {
+      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
+      if (firstWidth === 0) {
+        const raw = runStart + byteIndex * 3;
+        output.push(text.slice(raw, raw + 3));
+        byteIndex += 1;
+        continue;
+      }
+      let firstScalar = true;
+      while (byteIndex < bytes.length) {
+        const width = utf8ScalarWidth(bytes, byteIndex);
+        if (width === 0) break;
+        const codePoint = utf8CodePoint(bytes, byteIndex, width);
+        byteIndex += width;
+        if (firstScalar && codePoint === 65279) {
+          firstScalar = false;
+          continue;
+        }
+        firstScalar = false;
+        output.push(String.fromCodePoint(codePoint));
+      }
+      changed = true;
+    }
+  }
+  return changed ? output.join("") : void 0;
+}
+function repeatedlyDecodeUrl(value, maxPasses = 3) {
+  let current = value;
+  for (let pass = 0; pass < maxPasses; pass += 1) {
+    const decoded = decodePercentText(current);
+    if (!decoded || decoded === current) break;
+    current = decoded;
+  }
+  return current;
+}
+var ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/iu;
+function independentlyParseAbsoluteUrl(value, maxPasses) {
+  let current = value;
+  for (let pass = 0; pass <= maxPasses; pass += 1) {
+    if (ABSOLUTE_URL.test(current)) {
+      try {
+        return { url: new URL(current), passes: pass };
+      } catch {
+      }
+    }
+    if (pass === maxPasses) break;
+    const decoded = decodePercentText(current);
+    if (!decoded || decoded === current) return void 0;
+    current = decoded;
+  }
+  return void 0;
+}
+function canonicalizeUrl(value, maxPasses = 3) {
+  const input2 = value.trim().replaceAll("\\", "/");
+  const absolute = independentlyParseAbsoluteUrl(input2, maxPasses);
+  const remainingPasses = maxPasses - (absolute?.passes ?? 0);
+  const relative2 = input2.replace(/^\/{2,}/u, "/");
+  const url = absolute?.url ?? new URL(relative2, "https://surfaceguard.invalid");
+  url.pathname = repeatedlyDecodeUrl(url.pathname, remainingPasses).replaceAll("\\", "/").replace(/\/{2,}/gu, "/");
+  url.hash = "";
+  url.hostname = url.hostname.toLowerCase();
+  if (url.protocol === "https:" && url.port === "443" || url.protocol === "http:" && url.port === "80") {
+    url.port = "";
+  }
+  return absolute ? url.toString() : `${url.pathname}${url.search}`;
+}
+
+// src/matcher.ts
+function locationAt(text, offset, cursor) {
+  if (offset < cursor.offset) {
+    cursor.offset = 0;
+    cursor.line = 1;
+    cursor.lineStart = 0;
+  }
+  while (cursor.offset < offset) {
+    const code = text.charCodeAt(cursor.offset);
+    if (code === 13) {
+      if (text.charCodeAt(cursor.offset + 1) === 10 && cursor.offset + 1 < offset) {
+        cursor.offset += 1;
+      }
+      cursor.line += 1;
+      cursor.lineStart = cursor.offset + 1;
+    } else if (code === 10) {
+      cursor.line += 1;
+      cursor.lineStart = cursor.offset + 1;
+    }
+    cursor.offset += 1;
+  }
+  return { line: cursor.line, column: offset - cursor.lineStart + 1, offset };
+}
+function compilePatternRule(rule, limits, path) {
+  if (rule.pattern.length > limits.maxPatternLength) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `Pattern ${rule.id} exceeds maxPatternLength`,
+      {
+        ruleId: rule.id,
+        ...path ? { path } : {},
+        limit: limits.maxPatternLength
+      }
+    );
+  }
+  if (rule.match !== "regex") return void 0;
+  if (/\([^)]*[+*][^)]*\)[+*{]/u.test(rule.pattern)) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `Pattern ${rule.id} contains a nested quantifier`,
+      {
+        ruleId: rule.id,
+        ...path ? { path } : {}
+      }
+    );
+  }
+  try {
+    return new RegExp(rule.pattern, rule.caseSensitive === false ? "gui" : "gu");
+  } catch (error) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `Pattern ${rule.id} is not a valid regular expression`,
+      {
+        ruleId: rule.id,
+        ...path ? { path } : {},
+        cause: error instanceof Error ? error.message : String(error)
+      }
+    );
+  }
+}
+function* literalMatches(text, pattern, caseSensitive) {
+  if (!caseSensitive) {
+    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    yield* regexMatches(text, new RegExp(escaped, "giu"));
+    return;
+  }
+  let offset = 0;
+  while (pattern.length > 0) {
+    const index = text.indexOf(pattern, offset);
+    if (index < 0) break;
+    yield [index, pattern.length];
+    offset = index + Math.max(1, pattern.length);
+  }
+}
+function codePointWidthAt(text, index) {
+  const codePoint = text.codePointAt(index);
+  return codePoint !== void 0 && codePoint > 65535 ? 2 : 1;
+}
+function* regexMatches(text, regex) {
+  regex.lastIndex = 0;
+  let match;
+  while ((match = regex.exec(text)) !== null) {
+    yield [match.index, match[0].length];
+    if (match[0].length === 0) {
+      regex.lastIndex += codePointWidthAt(text, regex.lastIndex);
+    }
+  }
+}
+function matchPatternRule(raw, file, rule, category, limits) {
+  if (rule.scopes && !rule.scopes.includes("all") && !rule.scopes.includes(file.kind))
+    return [];
+  const regex = compilePatternRule(rule, limits);
+  const variants = decodeTextVariantsForMatching(raw, limits.maxDecodePasses);
+  const findings = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const variant of variants) {
+    const locationCursor = { offset: 0, line: 1, lineStart: 0 };
+    const matches = regex ? regexMatches(variant.text, regex) : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
+    for (const [start, length] of matches) {
+      const span = rawSpanForMatch(variant, start, length);
+      if (!span) continue;
+      const key = `${span.start}:${span.end}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const evidence = raw.slice(span.start, span.end);
+      findings.push({
+        ruleId: rule.id,
+        severity: rule.severity ?? "error",
+        category,
+        artifactPath: file.relativePath,
+        message: rule.message ?? `Forbidden ${category} pattern matched`,
+        evidence,
+        location: locationAt(raw, span.start, locationCursor),
+        transform: variant.transform,
+        help: `Remove the matched material from the produced ${file.kind} artifact or narrow the policy deliberately.`
+      });
+      if (findings.length >= limits.maxFindings) return findings;
+    }
+  }
+  return findings;
+}
 
 // src/policy.ts
 var SEVERITIES = /* @__PURE__ */ new Set(["error", "warning", "note"]);
@@ -75,7 +702,7 @@ function record(value, path) {
 }
 function strings(value, path) {
   if (value === void 0) return void 0;
-  if (!Array.isArray(value) || value.some((item) => typeof item !== "string" || item.length === 0)) {
+  if (!Array.isArray(value)) {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
       `${path} must be an array of non-empty strings`,
@@ -84,7 +711,50 @@ function strings(value, path) {
       }
     );
   }
-  return value;
+  const result = [];
+  for (let index = 0; index < value.length; index += 1) {
+    const item = value[index];
+    if (typeof item !== "string" || item.length === 0) {
+      throw new SurfaceGuardError(
+        "SG_CONFIG_INVALID",
+        `${path}[${index}] must be a non-empty string`,
+        { path: `${path}[${index}]` }
+      );
+    }
+    result.push(item);
+  }
+  const firstIndexes = /* @__PURE__ */ new Map();
+  for (const [index, item] of result.entries()) {
+    const firstIndex = firstIndexes.get(item);
+    if (firstIndex !== void 0) {
+      throw new SurfaceGuardError(
+        "SG_CONFIG_INVALID",
+        `${path}[${index}] duplicates ${path}[${firstIndex}]`,
+        {
+          path: `${path}[${index}]`,
+          duplicateOf: `${path}[${firstIndex}]`
+        }
+      );
+    }
+    firstIndexes.set(item, index);
+  }
+  return result;
+}
+function validateGlob(glob, path, limits) {
+  if (glob.length > limits.maxPatternLength) {
+    throw new SurfaceGuardError("SG_CONFIG_INVALID", `${path} exceeds maxPatternLength`, {
+      path,
+      limit: limits.maxPatternLength
+    });
+  }
+  try {
+    globToRegExp(glob);
+  } catch (error) {
+    throw new SurfaceGuardError("SG_CONFIG_INVALID", `${path} is not a valid glob`, {
+      path,
+      cause: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 function assertKnownKeys(value, keys, path) {
   const unknown = Object.keys(value).filter((key) => !keys.includes(key));
@@ -111,6 +781,13 @@ function validatePatternRule(value, path) {
       "SG_CONFIG_INVALID",
       `${path}.id has an invalid rule identifier`,
       { path }
+    );
+  }
+  if (Buffer.byteLength(item.id, "utf8") > MAX_RETAINED_RULE_ID_BYTES) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `${path}.id exceeds the output-safe identifier limit`,
+      { path: `${path}.id`, limit: MAX_RETAINED_RULE_ID_BYTES }
     );
   }
   if (typeof item.pattern !== "string" || item.pattern.length === 0) {
@@ -152,6 +829,13 @@ function validatePatternRule(value, path) {
       path
     });
   }
+  if (typeof item.message === "string" && Buffer.byteLength(item.message, "utf8") > MAX_RETAINED_MESSAGE_BYTES) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `${path}.message exceeds the output-safe message limit`,
+      { path: `${path}.message`, limit: MAX_RETAINED_MESSAGE_BYTES }
+    );
+  }
   return item;
 }
 function validateFileRule(value, path) {
@@ -162,6 +846,13 @@ function validateFileRule(value, path) {
       "SG_CONFIG_INVALID",
       `${path}.id has an invalid rule identifier`,
       { path }
+    );
+  }
+  if (Buffer.byteLength(item.id, "utf8") > MAX_RETAINED_RULE_ID_BYTES) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `${path}.id exceeds the output-safe identifier limit`,
+      { path: `${path}.id`, limit: MAX_RETAINED_RULE_ID_BYTES }
     );
   }
   if (typeof item.glob !== "string" || item.glob.length === 0) {
@@ -181,6 +872,13 @@ function validateFileRule(value, path) {
       path
     });
   }
+  if (typeof item.message === "string" && Buffer.byteLength(item.message, "utf8") > MAX_RETAINED_MESSAGE_BYTES) {
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `${path}.message exceeds the output-safe message limit`,
+      { path: `${path}.message`, limit: MAX_RETAINED_MESSAGE_BYTES }
+    );
+  }
   return item;
 }
 function validatePatternRules(value, path) {
@@ -188,14 +886,14 @@ function validatePatternRules(value, path) {
   if (!Array.isArray(value)) {
     throw new SurfaceGuardError("SG_CONFIG_INVALID", `${path} must be an array`, { path });
   }
-  return value.map((item, index) => validatePatternRule(item, `${path}[${index}]`));
+  return Array.from(value, (item, index) => validatePatternRule(item, `${path}[${index}]`));
 }
 function validateFileRules(value, path) {
   if (value === void 0) return void 0;
   if (!Array.isArray(value)) {
     throw new SurfaceGuardError("SG_CONFIG_INVALID", `${path} must be an array`, { path });
   }
-  return value.map((item, index) => validateFileRule(item, `${path}[${index}]`));
+  return Array.from(value, (item, index) => validateFileRule(item, `${path}[${index}]`));
 }
 function validatePolicy(value) {
   const root = record(value, "$");
@@ -234,13 +932,19 @@ function validatePolicy(value) {
       path: "$.failOn"
     });
   }
-  strings(root.exclude, "$.exclude");
+  const globs = [];
+  const patternRules = [];
+  const exclude = strings(root.exclude, "$.exclude");
+  exclude?.forEach((glob, index) => globs.push({ glob, path: `$.exclude[${index}]` }));
   if (root.routes !== void 0) {
     const routes = record(root.routes, "$.routes");
     assertKnownKeys(routes, ["allow", "deny", "require"], "$.routes");
-    strings(routes.allow, "$.routes.allow");
-    strings(routes.deny, "$.routes.deny");
-    strings(routes.require, "$.routes.require");
+    for (const key of ["allow", "deny", "require"]) {
+      const routeGlobs = strings(routes[key], `$.routes.${key}`);
+      routeGlobs?.forEach(
+        (glob, index) => globs.push({ glob, path: `$.routes.${key}[${index}]` })
+      );
+    }
   }
   if (root.sourceMaps !== void 0) {
     const maps = record(root.sourceMaps, "$.sourceMaps");
@@ -261,10 +965,15 @@ function validatePolicy(value) {
   if (root.forbidden !== void 0) {
     const forbidden = record(root.forbidden, "$.forbidden");
     assertKnownKeys(forbidden, ["text", "endpoints", "metadata", "files"], "$.forbidden");
-    validatePatternRules(forbidden.text, "$.forbidden.text");
-    validatePatternRules(forbidden.endpoints, "$.forbidden.endpoints");
-    validatePatternRules(forbidden.metadata, "$.forbidden.metadata");
-    validateFileRules(forbidden.files, "$.forbidden.files");
+    for (const key of ["text", "endpoints", "metadata"]) {
+      const path = `$.forbidden.${key}`;
+      const rules = validatePatternRules(forbidden[key], path);
+      if (rules) patternRules.push({ rules, path });
+    }
+    const fileRules = validateFileRules(forbidden.files, "$.forbidden.files");
+    fileRules?.forEach(
+      (rule, index) => globs.push({ glob: rule.glob, path: `$.forbidden.files[${index}].glob` })
+    );
   }
   if (root.sitemap !== void 0) {
     const sitemap = record(root.sitemap, "$.sitemap");
@@ -290,16 +999,28 @@ function validatePolicy(value) {
     }
   }
   if (root.limits !== void 0) {
-    const limits = record(root.limits, "$.limits");
-    assertKnownKeys(limits, Object.keys(DEFAULT_LIMITS), "$.limits");
-    for (const [key, value2] of Object.entries(limits)) {
+    const limits2 = record(root.limits, "$.limits");
+    assertKnownKeys(limits2, Object.keys(DEFAULT_LIMITS), "$.limits");
+    for (const [key, value2] of Object.entries(limits2)) {
       if (!Number.isSafeInteger(value2) || value2 <= 0) {
+        const path = `$.limits.${key}`;
         throw new SurfaceGuardError(
           "SG_CONFIG_INVALID",
-          `$.limits.${key} must be a positive integer`
+          `${path} must be a positive integer`,
+          { path }
         );
       }
     }
+  }
+  const limits = {
+    ...DEFAULT_LIMITS,
+    ...root.limits
+  };
+  for (const { glob, path } of globs) validateGlob(glob, path, limits);
+  for (const { rules, path } of patternRules) {
+    rules.forEach(
+      (rule, index) => compilePatternRule(rule, limits, `${path}[${index}].pattern`)
+    );
   }
   return value;
 }
@@ -331,21 +1052,35 @@ function resolveLimits(policy) {
 }
 
 // src/reporters/markdown.ts
-function table(value) {
-  return value.replaceAll("|", "\\|").replaceAll("\n", "<br>");
-}
+var SEVERITY_RANK = {
+  error: 2,
+  warning: 1,
+  note: 0
+};
 function location(finding) {
   if (!finding.location) return finding.artifactPath;
   return `${finding.artifactPath}:${finding.location.line}:${finding.location.column}`;
 }
+function row(finding) {
+  return `| ${finding.severity} | ${markdownCell(finding.ruleId)} | ${markdownCell(location(finding))} | ${markdownCell(displayEvidence(finding))} |`;
+}
+function omittedRowsNotice(count) {
+  return `Markdown output omitted ${count} retained finding row(s) to keep this report within ${MAX_MARKDOWN_REPORT_BYTES} UTF-8 bytes.`;
+}
 function renderMarkdown(result) {
   const status = result.failed ? "failed" : "passed";
+  const adapter = markdownCell(boundOutputText(result.adapter, MAX_RETAINED_MESSAGE_BYTES));
+  const findings = result.findings.map(boundFindingEvidence);
+  const truncatedEvidence = Math.max(
+    result.completeness.truncatedEvidence ?? 0,
+    findings.filter((finding) => finding.evidenceTruncated).length
+  );
   const lines = [
     "# SurfaceGuard report",
     "",
     `Status: **${status}**`,
     "",
-    `Adapter: \`${result.adapter}\``,
+    `Adapter: ${adapter}`,
     "",
     `Scanned ${result.statistics.filesScanned} text artifacts (${result.statistics.bytesVisited} bytes) and discovered ${result.statistics.routesFound} routes.`,
     ""
@@ -358,40 +1093,84 @@ function renderMarkdown(result) {
   }
   if (result.completeness.findingDetails === "truncated") {
     lines.push(
-      `Finding details were truncated at ${result.completeness.findingLimit} retained item(s); at least ${result.completeness.observedFindingsAtLeast} finding(s) were observed.`,
+      `Finding rows were truncated at ${result.completeness.findingLimit} retained item(s); at least ${result.completeness.observedFindingsAtLeast} finding(s) were observed.`,
       ""
     );
   }
-  if (result.findings.length === 0) {
+  if (truncatedEvidence > 0) {
+    lines.push(
+      `${truncatedEvidence} retained finding evidence value(s) exceeded ${result.completeness.evidenceLimit ?? MAX_RETAINED_EVIDENCE_BYTES} UTF-8 bytes and are shown as bounded prefixes.`,
+      ""
+    );
+  }
+  if (findings.length === 0) {
     lines.push("No findings.", "");
     return `${lines.join("\n")}
 `;
   }
-  lines.push("| Severity | Rule | Artifact | Evidence |", "| --- | --- | --- | --- |");
-  for (const finding of result.findings) {
-    lines.push(
-      `| ${finding.severity} | ${table(finding.ruleId)} | ${table(location(finding))} | ${table(finding.evidence ?? finding.message)} |`
-    );
+  const tableHeader = [
+    "| Severity | Rule | Artifact | Evidence |",
+    "| --- | --- | --- | --- |"
+  ];
+  const rows = findings.map((finding, index) => ({
+    finding,
+    index,
+    text: row(finding)
+  }));
+  const complete = [...lines, ...tableHeader, ...rows.map((item) => item.text), ""];
+  const completeReport = `${complete.join("\n")}
+`;
+  if (Buffer.byteLength(completeReport, "utf8") <= MAX_MARKDOWN_REPORT_BYTES) {
+    return completeReport;
   }
-  lines.push("");
-  return `${lines.join("\n")}
+  const prefix = `${[...lines, ...tableHeader].join("\n")}
+`;
+  const maximumNotice = `${omittedRowsNotice(rows.length)}
+`;
+  let available = MAX_MARKDOWN_REPORT_BYTES - Buffer.byteLength(prefix, "utf8") - Buffer.byteLength(maximumNotice, "utf8") - 2;
+  const selected = /* @__PURE__ */ new Set();
+  const prioritized = [...rows].sort(
+    (left, right) => SEVERITY_RANK[right.finding.severity] - SEVERITY_RANK[left.finding.severity] || left.index - right.index
+  );
+  for (const item of prioritized) {
+    const bytes = Buffer.byteLength(`${item.text}
+`, "utf8");
+    if (bytes > available) continue;
+    selected.add(item.index);
+    available -= bytes;
+  }
+  const retainedRows = rows.filter((item) => selected.has(item.index)).map((item) => item.text);
+  const omitted = rows.length - retainedRows.length;
+  return `${[
+    ...lines,
+    ...tableHeader,
+    ...retainedRows,
+    "",
+    omittedRowsNotice(omitted),
+    ""
+  ].join("\n")}
 `;
 }
 
 // src/reporters/sarif.ts
-var import_node_crypto = require("crypto");
+var import_node_crypto2 = require("crypto");
 function fingerprint(finding) {
-  return (0, import_node_crypto.createHash)("sha256").update(
+  return (0, import_node_crypto2.createHash)("sha256").update(
     [
       finding.ruleId,
       finding.artifactPath,
       finding.location?.offset ?? "",
-      finding.evidence ?? ""
+      finding.evidenceSha256 ? `sha256:${finding.evidenceSha256}` : finding.evidence ?? ""
     ].join("\0")
   ).digest("hex");
 }
 function toSarif(result) {
-  const ruleIds = [...new Set(result.findings.map((finding) => finding.ruleId))].sort();
+  const findings = result.findings.map(boundFindingEvidence);
+  const truncatedEvidence = Math.max(
+    result.completeness.truncatedEvidence ?? 0,
+    findings.filter((finding) => finding.evidenceTruncated).length
+  );
+  const ruleIds = [...new Set(findings.map((finding) => finding.ruleId))].sort();
   return {
     $schema: "https://json.schemastore.org/sarif-2.1.0.json",
     version: "2.1.0",
@@ -403,6 +1182,9 @@ function toSarif(result) {
           findingLimit: result.completeness.findingLimit,
           retainedFindings: result.completeness.retainedFindings,
           observedFindingsAtLeast: result.completeness.observedFindingsAtLeast,
+          evidenceDetails: truncatedEvidence === 0 ? "complete" : "truncated",
+          evidenceLimit: result.completeness.evidenceLimit ?? MAX_RETAINED_EVIDENCE_BYTES,
+          truncatedEvidence,
           unsupportedTextArtifacts: result.completeness.unsupportedTextArtifacts
         },
         tool: {
@@ -413,14 +1195,14 @@ function toSarif(result) {
             rules: ruleIds.map((ruleId) => ({ id: ruleId, name: ruleId }))
           }
         },
-        results: result.findings.map((finding) => ({
+        results: findings.map((finding) => ({
           ruleId: finding.ruleId,
           level: finding.severity === "error" ? "error" : finding.severity === "warning" ? "warning" : "note",
           message: { text: finding.message },
           locations: [
             {
               physicalLocation: {
-                artifactLocation: { uri: finding.artifactPath },
+                artifactLocation: { uri: relativeSarifUri(finding.artifactPath) },
                 ...finding.location ? {
                   region: {
                     startLine: finding.location.line,
@@ -434,6 +1216,9 @@ function toSarif(result) {
           properties: {
             category: finding.category,
             evidence: finding.evidence,
+            evidenceTruncated: finding.evidenceTruncated,
+            evidenceBytes: finding.evidenceBytes,
+            evidenceSha256: finding.evidenceSha256,
             transform: finding.transform
           }
         }))
@@ -447,7 +1232,10 @@ function renderSarif(result) {
 }
 
 // src/scan.ts
-var import_node_path7 = require("path");
+var import_node_path8 = require("path");
+
+// src/adapters/index.ts
+var import_node_path6 = require("path");
 
 // src/adapters/astro.ts
 var import_node_path3 = require("path");
@@ -687,12 +1475,17 @@ var astroAdapter = {
 // src/adapters/nextjs.ts
 var import_node_path4 = require("path");
 var NEXT_MANIFESTS = /* @__PURE__ */ new Set([
+  "app-path-routes-manifest.json",
   "app-paths-manifest.json",
   "build-manifest.json",
   "pages-manifest.json",
   "prerender-manifest.json",
   "routes-manifest.json"
 ]);
+var NEXT_INTERNAL_APP_ROUTES = /* @__PURE__ */ new Set(["/_global-error", "/_not-found"]);
+function isNextManifest(relativePath) {
+  return NEXT_MANIFESTS.has((0, import_node_path4.basename)(relativePath));
+}
 function addRoute(routes, seen, route, file, pointer, budget, normalize = (value) => value) {
   if (typeof route !== "string" || !route.startsWith("/")) return;
   const normalized = normalize(route);
@@ -724,11 +1517,59 @@ function normalizeAppPath(route) {
     }
     if (segment) publicSegments.push(segment);
   }
-  if (publicSegments.includes("_not-found")) return void 0;
-  return publicSegments.length > 0 ? `/${publicSegments.join("/")}` : "/";
+  const normalized = publicSegments.length > 0 ? `/${publicSegments.join("/")}` : "/";
+  return NEXT_INTERNAL_APP_ROUTES.has(normalized) ? void 0 : normalized;
+}
+function normalizeAppRoute(route) {
+  return NEXT_INTERNAL_APP_ROUTES.has(route) ? void 0 : route;
 }
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
+}
+function objectSection(root, section, manifest) {
+  const value = root[section];
+  if (value === void 0) return void 0;
+  const object = objectValue(value);
+  if (!object) throw new TypeError(`${manifest} ${section} must be an object`);
+  return object;
+}
+function objectArraySection(root, section, manifest) {
+  const value = root[section];
+  if (value === void 0) return void 0;
+  if (!Array.isArray(value) || value.some((entry) => objectValue(entry) === void 0)) {
+    throw new TypeError(`${manifest} ${section} must be an array of objects`);
+  }
+  return value;
+}
+function requiredRoute(value, location2) {
+  if (typeof value !== "string" || value.length === 0 || !value.startsWith("/")) {
+    throw new TypeError(`${location2} must name a non-empty absolute route string`);
+  }
+  return value;
+}
+function rewriteSections(root, manifest) {
+  const value = root.rewrites;
+  if (value === void 0) return [];
+  if (Array.isArray(value)) {
+    if (value.some((entry) => objectValue(entry) === void 0)) {
+      throw new TypeError(`${manifest} rewrites must be an array of objects`);
+    }
+    return [{ entries: value }];
+  }
+  const groups = objectValue(value);
+  if (!groups) {
+    throw new TypeError(`${manifest} rewrites must be an array or grouped object`);
+  }
+  const sections = [];
+  for (const group of ["beforeFiles", "afterFiles", "fallback"]) {
+    const entries = groups[group];
+    if (entries === void 0) continue;
+    if (!Array.isArray(entries) || entries.some((entry) => objectValue(entry) === void 0)) {
+      throw new TypeError(`${manifest} rewrites.${group} must be an array of objects`);
+    }
+    sections.push({ group, entries });
+  }
+  return sections;
 }
 function collectNextRoutes(value, file, routes, budget) {
   const root = objectValue(value);
@@ -747,8 +1588,22 @@ function collectNextRoutes(value, file, routes, budget) {
     );
     return;
   }
+  if (name === "app-path-routes-manifest.json") {
+    Object.entries(root).forEach(
+      ([appPath, route]) => addRoute(
+        routes,
+        seen,
+        requiredRoute(route, `${name} ${appPath}`),
+        file,
+        `/${appPath}`,
+        budget,
+        normalizeAppRoute
+      )
+    );
+    return;
+  }
   if (name === "build-manifest.json") {
-    const pages = objectValue(root.pages);
+    const pages = objectSection(root, "pages", name);
     Object.keys(pages ?? {}).forEach(
       (route) => addRoute(routes, seen, route, file, `/pages/${route}`, budget)
     );
@@ -756,7 +1611,7 @@ function collectNextRoutes(value, file, routes, budget) {
   }
   if (name === "prerender-manifest.json") {
     for (const section of ["routes", "dynamicRoutes"]) {
-      const entries = objectValue(root[section]);
+      const entries = objectSection(root, section, name);
       Object.keys(entries ?? {}).forEach(
         (route) => addRoute(routes, seen, route, file, `/${section}/${route}`, budget)
       );
@@ -768,39 +1623,36 @@ function collectNextRoutes(value, file, routes, budget) {
       "staticRoutes",
       "dynamicRoutes",
       "dataRoutes",
-      "redirects",
-      "rewrites"
+      "redirects"
     ]) {
-      const entries = root[section];
-      if (Array.isArray(entries)) {
-        entries.forEach((entry, index) => {
-          const candidate = objectValue(entry);
-          addRoute(
-            routes,
-            seen,
-            candidate?.page ?? candidate?.source ?? candidate?.pathname,
-            file,
-            `/${section}/${index}`,
-            budget
-          );
-        });
-      } else if (section === "rewrites") {
-        const groups = objectValue(entries);
-        for (const [group, groupEntries] of Object.entries(groups ?? {})) {
-          if (!Array.isArray(groupEntries)) continue;
-          groupEntries.forEach((entry, index) => {
-            const candidate = objectValue(entry);
-            addRoute(
-              routes,
-              seen,
-              candidate?.source,
-              file,
-              `/rewrites/${group}/${index}`,
-              budget
-            );
-          });
-        }
-      }
+      const entries = objectArraySection(root, section, name) ?? [];
+      entries.forEach((candidate, index) => {
+        const location2 = `${name} ${section}[${index}]`;
+        addRoute(
+          routes,
+          seen,
+          requiredRoute(
+            section === "redirects" ? candidate.source : candidate.page ?? candidate.source ?? candidate.pathname,
+            location2
+          ),
+          file,
+          `/${section}/${index}`,
+          budget
+        );
+      });
+    }
+    for (const rewrite of rewriteSections(root, name)) {
+      rewrite.entries.forEach((candidate, index) => {
+        const location2 = rewrite.group ? `${name} rewrites.${rewrite.group}[${index}]` : `${name} rewrites[${index}]`;
+        addRoute(
+          routes,
+          seen,
+          requiredRoute(candidate.source, location2),
+          file,
+          rewrite.group ? `/rewrites/${rewrite.group}/${index}` : `/rewrites/${index}`,
+          budget
+        );
+      });
     }
   }
 }
@@ -927,6 +1779,20 @@ var adapters = [
   viteAdapter,
   genericAdapter
 ];
+function strongAutoSignals(files) {
+  const frameworks = [];
+  if (files.some((file) => isNextManifest(file.relativePath))) frameworks.push("nextjs");
+  if (files.some((file) => (0, import_node_path6.extname)(file.relativePath.toLowerCase()) === ".html") && files.some((file) => file.relativePath.startsWith("_astro/"))) {
+    frameworks.push("astro");
+  }
+  if (files.some((file) => file.relativePath === ".vite/manifest.json")) {
+    frameworks.push("vite");
+  }
+  const genericRouteManifest = files.some(
+    (file) => !isNextManifest(file.relativePath) && genericAdapter.classify(file.relativePath) === "route-manifest"
+  );
+  return { frameworks, genericRouteManifest };
+}
 function selectAdapter(requested, files) {
   if (requested !== "auto") {
     const exact = adapters.find((adapter) => adapter.name === requested);
@@ -934,316 +1800,41 @@ function selectAdapter(requested, files) {
       throw new SurfaceGuardError("SG_CONFIG_INVALID", `Unknown adapter: ${requested}`);
     return exact;
   }
+  const signals = strongAutoSignals(files);
+  if (signals.frameworks.length > 1 || signals.genericRouteManifest && signals.frameworks.length > 0) {
+    const conflicts = [
+      ...signals.frameworks,
+      ...signals.genericRouteManifest ? ["generic-route-manifest"] : []
+    ];
+    throw new SurfaceGuardError(
+      "SG_CONFIG_INVALID",
+      `Artifact contains conflicting adapter signals (${conflicts.join(", ")}); select an adapter explicitly`,
+      { signals: conflicts }
+    );
+  }
+  const strongFramework = signals.frameworks[0];
+  if (strongFramework) {
+    return adapters.find((adapter) => adapter.name === strongFramework) ?? genericAdapter;
+  }
+  if (signals.genericRouteManifest) return genericAdapter;
   return [...adapters].sort((left, right) => right.detect(files) - left.detect(files))[0] ?? genericAdapter;
-}
-
-// src/decode.ts
-var IDENTITY_SPAN_VARIANTS = /* @__PURE__ */ new WeakSet();
-function identitySpans(text) {
-  return Array.from({ length: text.length }, (_, index) => ({
-    start: index,
-    end: index + 1
-  }));
-}
-function sourceSpanAt(input2, index) {
-  return IDENTITY_SPAN_VARIANTS.has(input2) ? { start: index, end: index + 1 } : input2.spans[index];
-}
-function decodeHexEscapes(input2) {
-  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4})/iu.test(input2.text)) return void 0;
-  let output = "";
-  const spans = [];
-  let changed = false;
-  for (let index = 0; index < input2.text.length; index += 1) {
-    const escaped = input2.text[index] === "\\";
-    const short = escaped ? /^\\x([0-9a-f]{2})/iu.exec(input2.text.slice(index)) : null;
-    const long = escaped ? /^\\u([0-9a-f]{4})/iu.exec(input2.text.slice(index)) : null;
-    const match = long ?? short;
-    if (match?.[1]) {
-      const width = match[0].length;
-      output += String.fromCodePoint(Number.parseInt(match[1], 16));
-      const first = sourceSpanAt(input2, index);
-      const last = sourceSpanAt(input2, index + width - 1);
-      if (first && last) spans.push({ start: first.start, end: last.end });
-      index += width - 1;
-      changed = true;
-      continue;
-    }
-    output += input2.text[index] ?? "";
-    const span = sourceSpanAt(input2, index);
-    if (span) spans.push(span);
-  }
-  return changed ? { text: output, spans, transform: `${input2.transform}+js-hex` } : void 0;
-}
-function hexNibble(code) {
-  if (code >= 48 && code <= 57) return code - 48;
-  const folded = code | 32;
-  return folded >= 97 && folded <= 102 ? folded - 87 : -1;
-}
-function isContinuation(byte) {
-  return byte >= 128 && byte <= 191;
-}
-function isValidUtf8Scalar(bytes, start, end) {
-  const length = end - start;
-  const lead = bytes[start] ?? 0;
-  if (length === 2) {
-    return lead >= 194 && lead <= 223 && isContinuation(bytes[start + 1] ?? 0);
-  }
-  if (length === 3 && isContinuation(bytes[start + 2] ?? 0)) {
-    const second = bytes[start + 1] ?? 0;
-    return lead === 224 && second >= 160 && second <= 191 || lead >= 225 && lead <= 236 && isContinuation(second) || lead === 237 && second >= 128 && second <= 159 || lead >= 238 && lead <= 239 && isContinuation(second);
-  }
-  if (length === 4 && isContinuation(bytes[start + 2] ?? 0) && isContinuation(bytes[start + 3] ?? 0)) {
-    const second = bytes[start + 1] ?? 0;
-    return lead === 240 && second >= 144 && second <= 191 || lead >= 241 && lead <= 243 && isContinuation(second) || lead === 244 && second >= 128 && second <= 143;
-  }
-  return false;
-}
-function utf8ScalarWidth(bytes, start) {
-  const lead = bytes[start] ?? 0;
-  if (lead <= 127) return 1;
-  for (const width of [2, 3, 4]) {
-    if (start + width <= bytes.length && isValidUtf8Scalar(bytes, start, start + width)) {
-      return width;
-    }
-  }
-  return 0;
-}
-function utf8CodePoint(bytes, start, width) {
-  const first = bytes[start] ?? 0;
-  if (width === 1) return first;
-  if (width === 2) return (first & 31) << 6 | (bytes[start + 1] ?? 0) & 63;
-  if (width === 3) {
-    return (first & 15) << 12 | ((bytes[start + 1] ?? 0) & 63) << 6 | (bytes[start + 2] ?? 0) & 63;
-  }
-  return (first & 7) << 18 | ((bytes[start + 1] ?? 0) & 63) << 12 | ((bytes[start + 2] ?? 0) & 63) << 6 | (bytes[start + 3] ?? 0) & 63;
-}
-function decodePercent(input2) {
-  if (!/%[0-9a-f]{2}/iu.test(input2.text)) return void 0;
-  const output = [];
-  const spans = [];
-  let changed = false;
-  for (let index = 0; index < input2.text.length; ) {
-    const first = hexNibble(input2.text.charCodeAt(index + 1));
-    const second = hexNibble(input2.text.charCodeAt(index + 2));
-    if (input2.text[index] !== "%" || first < 0 || second < 0) {
-      output.push(input2.text[index] ?? "");
-      const span = sourceSpanAt(input2, index);
-      if (span) spans.push(span);
-      index += 1;
-      continue;
-    }
-    const runStart = index;
-    while (input2.text[index] === "%" && hexNibble(input2.text.charCodeAt(index + 1)) >= 0 && hexNibble(input2.text.charCodeAt(index + 2)) >= 0) {
-      index += 3;
-    }
-    const runEnd = index;
-    const bytes = new Uint8Array((runEnd - runStart) / 3);
-    for (let offset = 0; offset < bytes.length; offset += 1) {
-      const raw = runStart + offset * 3;
-      bytes[offset] = hexNibble(input2.text.charCodeAt(raw + 1)) << 4 | hexNibble(input2.text.charCodeAt(raw + 2));
-    }
-    for (let byteIndex = 0; byteIndex < bytes.length; ) {
-      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
-      if (firstWidth === 0) {
-        const rawStart2 = runStart + byteIndex * 3;
-        for (let raw = rawStart2; raw < rawStart2 + 3; raw += 1) {
-          output.push(input2.text[raw] ?? "");
-          const span = sourceSpanAt(input2, raw);
-          if (span) spans.push(span);
-        }
-        byteIndex += 1;
-        continue;
-      }
-      const segmentStart = byteIndex;
-      byteIndex += firstWidth;
-      while (byteIndex < bytes.length) {
-        const width = utf8ScalarWidth(bytes, byteIndex);
-        if (width === 0) break;
-        byteIndex += width;
-      }
-      const segmentEnd = byteIndex;
-      const rawStart = runStart + segmentStart * 3;
-      const rawEnd = runStart + segmentEnd * 3;
-      const decodedFirst = sourceSpanAt(input2, rawStart);
-      const decodedLast = sourceSpanAt(input2, rawEnd - 1);
-      if (!decodedFirst || !decodedLast) continue;
-      let scalar = segmentStart;
-      let firstScalar = true;
-      while (scalar < segmentEnd) {
-        const width = utf8ScalarWidth(bytes, scalar);
-        const codePoint = utf8CodePoint(bytes, scalar, width);
-        scalar += width;
-        if (firstScalar && codePoint === 65279) {
-          firstScalar = false;
-          continue;
-        }
-        firstScalar = false;
-        const decoded = String.fromCodePoint(codePoint);
-        output.push(decoded);
-        spans.push({ start: decodedFirst.start, end: decodedLast.end });
-        if (decoded.length === 2) {
-          spans.push({ start: decodedFirst.start, end: decodedLast.end });
-        }
-      }
-      changed = true;
-    }
-  }
-  return changed ? { text: output.join(""), spans, transform: `${input2.transform}+percent` } : void 0;
-}
-function variantsForText(text, maxPasses, materializeIdentitySpans) {
-  const original = {
-    text,
-    spans: materializeIdentitySpans ? identitySpans(text) : [],
-    transform: "raw"
-  };
-  if (!materializeIdentitySpans) IDENTITY_SPAN_VARIANTS.add(original);
-  const variants = [original];
-  let current = decodeHexEscapes(original) ?? original;
-  if (current !== original) variants.push(current);
-  for (let pass = 0; pass < maxPasses; pass += 1) {
-    const next = decodePercent(current);
-    if (!next || next.text === current.text) break;
-    variants.push(next);
-    current = next;
-    const withHex = decodeHexEscapes(current);
-    if (withHex && withHex.text !== current.text) {
-      variants.push(withHex);
-      current = withHex;
-    }
-  }
-  return variants;
-}
-function decodeTextVariantsForMatching(text, maxPasses) {
-  return variantsForText(text, maxPasses, false);
-}
-function rawSpanForMatch(variant, start, length) {
-  const first = sourceSpanAt(variant, start);
-  const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
-  return first && last ? { start: first.start, end: last.end } : void 0;
-}
-function decodePercentText(text) {
-  if (!/%[0-9a-f]{2}/iu.test(text)) return void 0;
-  const output = [];
-  let changed = false;
-  for (let index = 0; index < text.length; ) {
-    if (text[index] !== "%" || hexNibble(text.charCodeAt(index + 1)) < 0 || hexNibble(text.charCodeAt(index + 2)) < 0) {
-      output.push(text[index] ?? "");
-      index += 1;
-      continue;
-    }
-    const runStart = index;
-    while (text[index] === "%" && hexNibble(text.charCodeAt(index + 1)) >= 0 && hexNibble(text.charCodeAt(index + 2)) >= 0) {
-      index += 3;
-    }
-    const bytes = new Uint8Array((index - runStart) / 3);
-    for (let offset = 0; offset < bytes.length; offset += 1) {
-      const raw = runStart + offset * 3;
-      bytes[offset] = hexNibble(text.charCodeAt(raw + 1)) << 4 | hexNibble(text.charCodeAt(raw + 2));
-    }
-    for (let byteIndex = 0; byteIndex < bytes.length; ) {
-      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
-      if (firstWidth === 0) {
-        const raw = runStart + byteIndex * 3;
-        output.push(text.slice(raw, raw + 3));
-        byteIndex += 1;
-        continue;
-      }
-      let firstScalar = true;
-      while (byteIndex < bytes.length) {
-        const width = utf8ScalarWidth(bytes, byteIndex);
-        if (width === 0) break;
-        const codePoint = utf8CodePoint(bytes, byteIndex, width);
-        byteIndex += width;
-        if (firstScalar && codePoint === 65279) {
-          firstScalar = false;
-          continue;
-        }
-        firstScalar = false;
-        output.push(String.fromCodePoint(codePoint));
-      }
-      changed = true;
-    }
-  }
-  return changed ? output.join("") : void 0;
-}
-function repeatedlyDecodeUrl(value, maxPasses = 3) {
-  let current = value;
-  for (let pass = 0; pass < maxPasses; pass += 1) {
-    const decoded = decodePercentText(current);
-    if (!decoded || decoded === current) break;
-    current = decoded;
-  }
-  return current;
-}
-function canonicalizeUrl(value, maxPasses = 3) {
-  const input2 = value.trim().replaceAll("\\", "/");
-  const absolute = /^[a-z][a-z\d+.-]*:/iu.test(input2);
-  const url = new URL(input2, "https://surfaceguard.invalid");
-  url.pathname = repeatedlyDecodeUrl(url.pathname, maxPasses).replaceAll("\\", "/").replace(/\/{2,}/gu, "/");
-  url.hash = "";
-  url.hostname = url.hostname.toLowerCase();
-  if (url.protocol === "https:" && url.port === "443" || url.protocol === "http:" && url.port === "80") {
-    url.port = "";
-  }
-  return absolute ? url.toString() : `${url.pathname}${url.search}`;
 }
 
 // src/filesystem.ts
 var import_node_fs = require("fs");
 var import_promises2 = require("fs/promises");
-var import_node_path6 = require("path");
+var import_node_path7 = require("path");
 var import_node_zlib = require("zlib");
-
-// src/glob.ts
-var REGEX_SPECIAL = /* @__PURE__ */ new Set(["\\", "^", "$", ".", "+", "(", ")", "|", "{", "}"]);
-function globToRegExp(glob) {
-  let source = "^";
-  for (let index = 0; index < glob.length; index += 1) {
-    const character = glob[index] ?? "";
-    if (character === "*") {
-      if (glob[index + 1] === "*") {
-        index += 1;
-        if (glob[index + 1] === "/") {
-          index += 1;
-          source += "(?:.*/)?";
-        } else {
-          source += ".*";
-        }
-      } else {
-        source += "[^/]*";
-      }
-    } else if (character === "?") {
-      source += "[^/]";
-    } else if (character === "[") {
-      const end = glob.indexOf("]", index + 1);
-      if (end > index + 1) {
-        const content = glob.slice(index + 1, end).replace(/^!/u, "^");
-        source += `[${content.replaceAll("\\", "\\\\")}]`;
-        index = end;
-      } else {
-        source += "\\[";
-      }
-    } else {
-      source += REGEX_SPECIAL.has(character) ? `\\${character}` : character;
-    }
-  }
-  return new RegExp(`${source}$`, "u");
-}
-function matchesGlob(value, glob) {
-  return globToRegExp(glob).test(value);
-}
-
-// src/filesystem.ts
 function toPosixPath(value) {
-  return value.split(import_node_path6.sep).join("/");
+  return value.split(import_node_path7.sep).join("/");
 }
 function isContained(root, candidate) {
-  const child = (0, import_node_path6.relative)(root, candidate);
-  return child === "" || !child.startsWith(`..${import_node_path6.sep}`) && child !== ".." && !(0, import_node_path6.isAbsolute)(child);
+  const child = (0, import_node_path7.relative)(root, candidate);
+  return child === "" || !child.startsWith(`..${import_node_path7.sep}`) && child !== ".." && !(0, import_node_path7.isAbsolute)(child);
 }
 async function discoverFiles(inputRoot, limits, exclude, signal) {
   throwIfAborted(signal);
-  const requestedRoot = (0, import_node_path6.resolve)(inputRoot);
+  const requestedRoot = (0, import_node_path7.resolve)(inputRoot);
   let rootStat;
   try {
     rootStat = await (0, import_promises2.lstat)(requestedRoot);
@@ -1282,7 +1873,7 @@ async function discoverFiles(inputRoot, limits, exclude, signal) {
         "SG_RESOURCE_LIMIT",
         "Artifact directory depth exceeds maxDepth",
         {
-          artifactPath: toPosixPath((0, import_node_path6.relative)(root, directory)) || ".",
+          artifactPath: toPosixPath((0, import_node_path7.relative)(root, directory)) || ".",
           limit: limits.maxDepth,
           observed: depth
         }
@@ -1331,8 +1922,8 @@ async function discoverFiles(inputRoot, limits, exclude, signal) {
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
       throwIfAborted(signal);
-      const absolutePath = (0, import_node_path6.resolve)(directory, entry.name);
-      const relativePath = toPosixPath((0, import_node_path6.relative)(root, absolutePath));
+      const absolutePath = (0, import_node_path7.resolve)(directory, entry.name);
+      const relativePath = toPosixPath((0, import_node_path7.relative)(root, absolutePath));
       if (!isContained(root, absolutePath)) {
         findingsObserved += 1;
         if (findings.length < limits.maxFindings) {
@@ -1751,122 +2342,6 @@ function appearsBinary(text) {
   return false;
 }
 
-// src/matcher.ts
-function locationAt(text, offset) {
-  let line = 1;
-  let lineStart = 0;
-  for (let index = 0; index < offset; index += 1) {
-    if (text.charCodeAt(index) === 10) {
-      line += 1;
-      lineStart = index + 1;
-    }
-  }
-  return { line, column: offset - lineStart + 1, offset };
-}
-function safeRegex(rule, limits) {
-  if (rule.pattern.length > limits.maxPatternLength) {
-    throw new SurfaceGuardError(
-      "SG_CONFIG_INVALID",
-      `Pattern ${rule.id} exceeds maxPatternLength`,
-      {
-        ruleId: rule.id,
-        limit: limits.maxPatternLength
-      }
-    );
-  }
-  if (/\([^)]*[+*][^)]*\)[+*{]/u.test(rule.pattern)) {
-    throw new SurfaceGuardError(
-      "SG_CONFIG_INVALID",
-      `Pattern ${rule.id} contains a nested quantifier`,
-      {
-        ruleId: rule.id
-      }
-    );
-  }
-  try {
-    return new RegExp(rule.pattern, rule.caseSensitive === false ? "gui" : "gu");
-  } catch (error) {
-    throw new SurfaceGuardError(
-      "SG_CONFIG_INVALID",
-      `Pattern ${rule.id} is not a valid regular expression`,
-      {
-        ruleId: rule.id,
-        cause: error instanceof Error ? error.message : String(error)
-      }
-    );
-  }
-}
-function* literalMatches(text, pattern, caseSensitive) {
-  if (!caseSensitive) {
-    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
-    yield* regexMatches(text, new RegExp(escaped, "giu"));
-    return;
-  }
-  let offset = 0;
-  while (pattern.length > 0) {
-    const index = text.indexOf(pattern, offset);
-    if (index < 0) break;
-    yield [index, pattern.length];
-    offset = index + Math.max(1, pattern.length);
-  }
-}
-function codePointWidthAt(text, index) {
-  const codePoint = text.codePointAt(index);
-  return codePoint !== void 0 && codePoint > 65535 ? 2 : 1;
-}
-function* regexMatches(text, regex) {
-  regex.lastIndex = 0;
-  let match;
-  while ((match = regex.exec(text)) !== null) {
-    yield [match.index, match[0].length];
-    if (match[0].length === 0) {
-      regex.lastIndex += codePointWidthAt(text, regex.lastIndex);
-    }
-  }
-}
-function matchPatternRule(raw, file, rule, category, limits) {
-  if (rule.scopes && !rule.scopes.includes("all") && !rule.scopes.includes(file.kind))
-    return [];
-  if (rule.pattern.length > limits.maxPatternLength) {
-    throw new SurfaceGuardError(
-      "SG_CONFIG_INVALID",
-      `Pattern ${rule.id} exceeds maxPatternLength`,
-      {
-        ruleId: rule.id
-      }
-    );
-  }
-  const variants = decodeTextVariantsForMatching(raw, limits.maxDecodePasses);
-  const findings = [];
-  const seen = /* @__PURE__ */ new Set();
-  const regex = rule.match === "regex" ? safeRegex(rule, limits) : void 0;
-  for (const variant of variants) {
-    const matches = regex ? regexMatches(variant.text, regex) : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
-    for (const [start, length] of matches) {
-      const matchLength = length > 0 ? length : codePointWidthAt(variant.text, start);
-      const span = rawSpanForMatch(variant, start, matchLength);
-      if (!span) continue;
-      const key = `${span.start}:${span.end}`;
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const evidence = raw.slice(span.start, span.end);
-      findings.push({
-        ruleId: rule.id,
-        severity: rule.severity ?? "error",
-        category,
-        artifactPath: file.relativePath,
-        message: rule.message ?? `Forbidden ${category} pattern matched`,
-        evidence,
-        location: locationAt(raw, span.start),
-        transform: variant.transform,
-        help: `Remove the matched material from the produced ${file.kind} artifact or narrow the policy deliberately.`
-      });
-      if (findings.length >= limits.maxFindings) return findings;
-    }
-  }
-  return findings;
-}
-
 // src/sitemap.ts
 function decodeXml(value) {
   const entities = {
@@ -1889,30 +2364,71 @@ function decodeXml(value) {
     }
   );
 }
+function markupEnd(text, start, signal) {
+  let quote;
+  for (let index = start; index < text.length; index += 1) {
+    if ((index & 4095) === 0) throwIfAborted(signal);
+    const character = text[index];
+    if (quote) {
+      if (character === quote) quote = void 0;
+      continue;
+    }
+    if (character === '"' || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === ">") return index;
+  }
+  return -1;
+}
+function markupName(text, start, end) {
+  let cursor = start + 1;
+  if (text[cursor] === "/") cursor += 1;
+  while (/\s/u.test(text[cursor] ?? "")) cursor += 1;
+  const nameStart = cursor;
+  while (cursor < end && !/[\s/>]/u.test(text[cursor] ?? "")) cursor += 1;
+  return text.slice(nameStart, cursor);
+}
+function localName(name) {
+  const separator = name.lastIndexOf(":");
+  return name.slice(separator + 1).toLowerCase();
+}
+function selfClosingMarkup(text, start, end) {
+  let cursor = end - 1;
+  while (cursor > start && /\s/u.test(text[cursor] ?? "")) cursor -= 1;
+  return text[cursor] === "/";
+}
+var VISIBLE_URL_SCHEME = /^[a-z][a-z\d+.-]*:/iu;
+function robotsPathForSitemapLocation(value, maxDecodePasses) {
+  const input2 = value.trim().replaceAll("\\", "/");
+  let current = input2;
+  for (let pass = 0; pass <= maxDecodePasses; pass += 1) {
+    if (VISIBLE_URL_SCHEME.test(current) || current.startsWith("//")) {
+      try {
+        const url = current.startsWith("//") ? new URL(current, "https://surfaceguard.invalid") : new URL(current);
+        return `${url.pathname}${url.search}`;
+      } catch {
+      }
+    }
+    if (pass === maxDecodePasses) break;
+    const decoded = repeatedlyDecodeUrl(current, 1);
+    if (decoded === current) break;
+    current = decoded;
+  }
+  try {
+    const relative2 = new URL(input2, "https://surfaceguard.invalid");
+    return `${relative2.pathname}${relative2.search}`;
+  } catch {
+    return void 0;
+  }
+}
 function parseSitemap(text, maxDecodePasses, options) {
   const routes = [];
+  const robotsPaths = [];
   let entriesVisited = options.entriesVisited ?? 0;
   let cursor = 0;
   let openLocation;
-  while (cursor < text.length) {
-    throwIfAborted(options.signal);
-    const tagStart = text.indexOf("<", cursor);
-    if (tagStart < 0) break;
-    const tagEnd = text.indexOf(">", tagStart + 1);
-    if (tagEnd < 0) break;
-    cursor = tagEnd + 1;
-    let nameStart = tagStart + 1;
-    const closing = text[nameStart] === "/";
-    if (closing) nameStart += 1;
-    if (text.slice(nameStart, nameStart + 3).toLowerCase() !== "loc") continue;
-    const boundary = text[nameStart + 3];
-    if (boundary !== ">" && boundary !== "/" && !/\s/u.test(boundary ?? "")) continue;
-    if (!closing) {
-      if (text.slice(tagStart, tagEnd).trimEnd().endsWith("/")) continue;
-      openLocation ??= tagEnd + 1;
-      continue;
-    }
-    if (openLocation === void 0) continue;
+  const visitLocation = (value) => {
     entriesVisited += 1;
     if (entriesVisited > options.maxEntries) {
       throw new SurfaceGuardError(
@@ -1924,39 +2440,247 @@ function parseSitemap(text, maxDecodePasses, options) {
         }
       );
     }
-    const value = decodeXml(text.slice(openLocation, tagStart).trim());
-    openLocation = void 0;
-    if (!value) continue;
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    const robotsPath = robotsPathForSitemapLocation(trimmed, maxDecodePasses);
+    if (robotsPath) robotsPaths.push(robotsPath);
     try {
-      const canonical = canonicalizeUrl(value, maxDecodePasses);
+      const canonical = canonicalizeUrl(trimmed, maxDecodePasses);
       const url = new URL(canonical, "https://surfaceguard.invalid");
       routes.push(`${url.pathname}${url.search}`);
     } catch {
+    }
+  };
+  while (cursor < text.length) {
+    throwIfAborted(options.signal);
+    const tagStart = text.indexOf("<", cursor);
+    if (tagStart < 0) {
+      if (openLocation) openLocation.chunks.push(decodeXml(text.slice(cursor)));
+      break;
+    }
+    if (openLocation && tagStart > cursor) {
+      openLocation.chunks.push(decodeXml(text.slice(cursor, tagStart)));
+    }
+    if (text.startsWith("<!--", tagStart)) {
+      const end = text.indexOf("-->", tagStart + 4);
+      if (end < 0) break;
+      cursor = end + 3;
       continue;
     }
+    if (text.startsWith("<![CDATA[", tagStart)) {
+      const end = text.indexOf("]]>", tagStart + 9);
+      if (end < 0) break;
+      if (openLocation) openLocation.chunks.push(text.slice(tagStart + 9, end));
+      cursor = end + 3;
+      continue;
+    }
+    if (text.startsWith("<?", tagStart)) {
+      const end = text.indexOf("?>", tagStart + 2);
+      if (end < 0) break;
+      cursor = end + 2;
+      continue;
+    }
+    if (text.slice(tagStart, tagStart + 9).toUpperCase() === "<!DOCTYPE") {
+      throw new SurfaceGuardError(
+        "SG_IO_ERROR",
+        "Sitemap DOCTYPE declarations are unsupported",
+        { reason: "External and custom XML entities are not expanded" }
+      );
+    }
+    const tagEnd = markupEnd(text, tagStart + 1, options.signal);
+    if (tagEnd < 0) break;
+    const name = markupName(text, tagStart, tagEnd);
+    const locationTag = localName(name) === "loc";
+    const closing = text[tagStart + 1] === "/";
+    const selfClosing = !closing && selfClosingMarkup(text, tagStart, tagEnd);
+    if (locationTag) {
+      if (closing && openLocation) {
+        openLocation.depth -= 1;
+        if (openLocation.depth === 0) {
+          visitLocation(openLocation.chunks.join(""));
+          openLocation = void 0;
+        }
+      } else if (!closing && selfClosing && !openLocation) {
+        visitLocation("");
+      } else if (!closing && !selfClosing) {
+        if (openLocation) openLocation.depth += 1;
+        else openLocation = { depth: 1, chunks: [] };
+      }
+    }
+    cursor = tagEnd + 1;
   }
-  return { routes, entriesVisited };
+  return { routes, robotsPaths, entriesVisited };
 }
-function parseRobots(text) {
+function parseRobots(text, options = {}) {
   const rules = { disallow: [], sitemaps: [] };
-  for (const line of text.split(/\r?\n/u)) {
-    const withoutComment = line.split("#", 1)[0]?.trim() ?? "";
+  const maxRules = options.maxRules ?? Number.MAX_SAFE_INTEGER;
+  const maxRuleLength = options.maxRuleLength ?? Number.MAX_SAFE_INTEGER;
+  let rulesVisited = 0;
+  const addRule = (kind, value) => {
+    if (value.length > maxRuleLength) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "robots.txt directive exceeds maxPatternLength",
+        { limit: maxRuleLength, observed: value.length }
+      );
+    }
+    rulesVisited += 1;
+    if (rulesVisited > maxRules) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "robots.txt directive count exceeds maxRobotsRules",
+        { limit: maxRules, observed: rulesVisited }
+      );
+    }
+    rules[kind].push(value);
+  };
+  let cursor = 0;
+  while (cursor <= text.length) {
+    throwIfAborted(options.signal);
+    let end = cursor;
+    while (end < text.length && text[end] !== "\r" && text[end] !== "\n") end += 1;
+    const line = text.slice(cursor, end);
+    const comment = line.indexOf("#");
+    const withoutComment = line.slice(0, comment < 0 ? line.length : comment).trim();
     const separator = withoutComment.indexOf(":");
-    if (separator < 0) continue;
-    const name = withoutComment.slice(0, separator).trim().toLowerCase();
-    const value = withoutComment.slice(separator + 1).trim();
-    if (name === "disallow" && value.startsWith("/")) rules.disallow.push(value);
-    if (name === "sitemap" && value) rules.sitemaps.push(value);
+    if (separator >= 0) {
+      const name = withoutComment.slice(0, separator).trim().toLowerCase();
+      const value = withoutComment.slice(separator + 1).trim();
+      if (name === "disallow" && value.startsWith("/")) addRule("disallow", value);
+      if (name === "sitemap" && value) addRule("sitemaps", value);
+    }
+    if (end >= text.length) break;
+    cursor = end + 1;
+    if (text[end] === "\r" && text[cursor] === "\n") cursor += 1;
   }
   return rules;
 }
+function unreserved(byte) {
+  return byte >= 65 && byte <= 90 || byte >= 97 && byte <= 122 || byte >= 48 && byte <= 57 || byte === 45 || byte === 46 || byte === 95 || byte === 126;
+}
+function hexDigit(code) {
+  if (code >= 48 && code <= 57) return code - 48;
+  const folded = code | 32;
+  return folded >= 97 && folded <= 102 ? folded - 87 : -1;
+}
+var ROBOTS_ENCODER = new TextEncoder();
+function normalizeRobotsOctets(value) {
+  let normalized = "";
+  for (let index = 0; index < value.length; ) {
+    const first = hexDigit(value.charCodeAt(index + 1));
+    const second = hexDigit(value.charCodeAt(index + 2));
+    if (value[index] === "%" && first >= 0 && second >= 0) {
+      const byte = first << 4 | second;
+      normalized += unreserved(byte) ? String.fromCodePoint(byte) : `%${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+      index += 3;
+      continue;
+    }
+    const codePoint = value.codePointAt(index) ?? 0;
+    const character = String.fromCodePoint(codePoint);
+    if (codePoint <= 127) {
+      normalized += character;
+    } else {
+      for (const byte of ROBOTS_ENCODER.encode(character)) {
+        normalized += `%${byte.toString(16).padStart(2, "0").toUpperCase()}`;
+      }
+    }
+    index += character.length;
+  }
+  return normalized;
+}
+function wildcardPrefixMatch(value, pattern, anchored) {
+  const firstStar = pattern.indexOf("*");
+  if (firstStar < 0) {
+    return anchored ? value === pattern : value.startsWith(pattern);
+  }
+  const first = pattern.slice(0, firstStar);
+  if (first && !value.startsWith(first)) return false;
+  let cursor = first.length;
+  let patternCursor = firstStar + 1;
+  let nextStar = pattern.indexOf("*", patternCursor);
+  while (nextStar >= 0) {
+    const segment = pattern.slice(patternCursor, nextStar);
+    if (segment) {
+      const match = value.indexOf(segment, cursor);
+      if (match < 0) return false;
+      cursor = match + segment.length;
+    }
+    patternCursor = nextStar + 1;
+    nextStar = pattern.indexOf("*", patternCursor);
+  }
+  const last = pattern.slice(patternCursor);
+  if (anchored) {
+    const match = value.length - last.length;
+    return match >= cursor && value.startsWith(last, match);
+  }
+  return !last || value.includes(last, cursor);
+}
+function normalizeRobotsPath(pathAndQuery) {
+  return normalizeRobotsOctets(pathAndQuery);
+}
+function compileRobotsRule(rule) {
+  const anchored = rule.endsWith("$");
+  const body = anchored ? rule.slice(0, -1) : rule;
+  return { anchored, pattern: normalizeRobotsOctets(body) };
+}
+function matchesCompiledRobotsRule(normalizedPathAndQuery, rule) {
+  return wildcardPrefixMatch(normalizedPathAndQuery, rule.pattern, rule.anchored);
+}
 
 // src/scan.ts
-var SEVERITY_RANK = {
+var SEVERITY_RANK2 = {
   note: 0,
   warning: 1,
   error: 2
 };
+var KNOWN_BINARY_EXTENSIONS = /* @__PURE__ */ new Set([
+  ".7z",
+  ".avi",
+  ".avif",
+  ".bin",
+  ".bmp",
+  ".br",
+  ".eot",
+  ".gif",
+  ".gz",
+  ".ico",
+  ".jpeg",
+  ".jpg",
+  ".mov",
+  ".mp3",
+  ".mp4",
+  ".ogg",
+  ".otf",
+  ".pdf",
+  ".png",
+  ".rar",
+  ".tar",
+  ".tif",
+  ".tiff",
+  ".ttf",
+  ".wasm",
+  ".wav",
+  ".webm",
+  ".webp",
+  ".woff",
+  ".woff2",
+  ".zip"
+]);
+function hasKnownBinaryExtension(file) {
+  return KNOWN_BINARY_EXTENSIONS.has((0, import_node_path8.extname)(file.relativePath).toLowerCase());
+}
+function ambiguousUnknownLooksTextual(text) {
+  let characters = 0;
+  let textCharacters = 0;
+  for (const character of text) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    characters += 1;
+    if (codePoint === 9 || codePoint === 10 || codePoint === 13 || codePoint >= 32 && codePoint <= 126 || codePoint >= 160 && codePoint !== 65533) {
+      textCharacters += 1;
+    }
+  }
+  return characters > 0 && textCharacters / characters >= 0.85;
+}
 function routeMatches(route, patterns) {
   return patterns.some((pattern) => matchesGlob(route, pattern));
 }
@@ -2018,12 +2742,14 @@ function evaluateRoutes(routes, options, maxDecodePasses) {
   }
   return { findings, normalized };
 }
-function evaluateSitemap(policy, files, texts, routes, maxDecodePasses, maxSitemapEntries, signal) {
+function evaluateSitemap(policy, files, texts, routes, limits, signal) {
   const settings = policy.sitemap;
   if (!settings || settings.mode === "off") return [];
   const findings = [];
   const sitemapFiles = files.filter((file) => file.kind === "sitemap");
-  const robotsFile = files.find((file) => file.kind === "robots");
+  const robotsFile = files.find(
+    (file) => file.kind === "robots" && file.relativePath === "robots.txt"
+  );
   if (settings.mode === "required" && sitemapFiles.length === 0) {
     findings.push({
       ruleId: "SG4001",
@@ -2036,20 +2762,29 @@ function evaluateSitemap(policy, files, texts, routes, maxDecodePasses, maxSitem
   }
   if (sitemapFiles.length === 0) return findings;
   const sitemapRoutes = /* @__PURE__ */ new Map();
+  const sitemapUrls = /* @__PURE__ */ new Map();
   let entriesVisited = 0;
   for (const file of sitemapFiles) {
     const text = texts.get(file.relativePath) ?? "";
-    const parsed = parseSitemap(text, maxDecodePasses, {
-      maxEntries: maxSitemapEntries,
+    const parsed = parseSitemap(text, limits.maxDecodePasses, {
+      maxEntries: limits.maxSitemapEntries,
       entriesVisited,
       ...signal ? { signal } : {}
     });
     entriesVisited = parsed.entriesVisited;
     for (const route of parsed.routes) {
-      sitemapRoutes.set(normalizeRoute(route, maxDecodePasses), file.relativePath);
+      const normalizedRoute = normalizeRoute(route, limits.maxDecodePasses);
+      sitemapRoutes.set(normalizedRoute, file.relativePath);
+    }
+    for (const pathAndQuery of parsed.robotsPaths) {
+      sitemapUrls.set(pathAndQuery, file.relativePath);
     }
   }
-  const robots = robotsFile ? parseRobots(texts.get(robotsFile.relativePath) ?? "") : void 0;
+  const robots = robotsFile ? parseRobots(texts.get(robotsFile.relativePath) ?? "", {
+    maxRules: limits.maxRobotsRules ?? 5e4,
+    maxRuleLength: limits.maxPatternLength,
+    ...signal ? { signal } : {}
+  }) : void 0;
   if (settings.requireRobotsReference) {
     if (!robotsFile || !robots || robots.sitemaps.length === 0) {
       findings.push({
@@ -2061,17 +2796,50 @@ function evaluateSitemap(policy, files, texts, routes, maxDecodePasses, maxSitem
       });
     }
   }
-  for (const [route, artifactPath] of sitemapRoutes) {
-    if (robots?.disallow.some((pattern) => routeMatches(route, [pattern, `${pattern}/**`]))) {
+  let robotsComparisons = 0;
+  let robotsWork = 0;
+  const maxRobotsComparisons = limits.maxRobotsComparisons ?? 1e6;
+  const maxRobotsWork = limits.maxRobotsWork ?? 64 * 1024 * 1024;
+  const compiledDisallow = (robots?.disallow ?? []).map(compileRobotsRule);
+  const disallowedByRobots = (pathAndQuery) => {
+    const normalizedPathAndQuery = normalizeRobotsPath(pathAndQuery);
+    for (const pattern of compiledDisallow) {
+      robotsComparisons += 1;
+      robotsWork += normalizedPathAndQuery.length + pattern.pattern.length + 1;
+      if ((robotsComparisons & 4095) === 0 && signal?.aborted) {
+        throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
+      }
+      if (robotsComparisons > maxRobotsComparisons) {
+        throw new SurfaceGuardError(
+          "SG_RESOURCE_LIMIT",
+          "Sitemap and robots.txt comparisons exceed maxRobotsComparisons",
+          { limit: maxRobotsComparisons, observed: robotsComparisons }
+        );
+      }
+      if (robotsWork > maxRobotsWork) {
+        throw new SurfaceGuardError(
+          "SG_RESOURCE_LIMIT",
+          "Sitemap and robots.txt matching exceeds maxRobotsWork",
+          { limit: maxRobotsWork, observed: robotsWork }
+        );
+      }
+      if (matchesCompiledRobotsRule(normalizedPathAndQuery, pattern)) return true;
+    }
+    return false;
+  };
+  for (const [pathAndQuery, artifactPath] of sitemapUrls) {
+    if (disallowedByRobots(pathAndQuery)) {
       findings.push({
         ruleId: "SG4003",
         severity: "error",
         category: "sitemap",
         artifactPath,
         message: "Sitemap exposes a route disallowed by robots.txt",
-        evidence: route
+        evidence: pathAndQuery
       });
     }
+  }
+  for (const [route, artifactPath] of sitemapRoutes) {
     if (settings.forbidDisallowedRoutes && policy.routes?.deny?.length && routeMatches(route, policy.routes.deny)) {
       findings.push({
         ruleId: "SG4004",
@@ -2139,21 +2907,21 @@ var FindingCollector = class {
   observedFindingsAtLeast = 0;
   add(finding) {
     this.observedFindingsAtLeast += 1;
-    const rank = SEVERITY_RANK[finding.severity];
-    if (rank >= SEVERITY_RANK[this.failOn]) this.failureObserved = true;
+    const rank = SEVERITY_RANK2[finding.severity];
+    if (rank >= SEVERITY_RANK2[this.failOn]) this.failureObserved = true;
     if (this.findings.length < this.maximum) {
-      this.findings.push(finding);
+      this.findings.push(boundFindingEvidence(finding));
       return;
     }
     this.truncated = true;
     let lowest = this.findings.length - 1;
     for (let index = this.findings.length - 2; index >= 0; index -= 1) {
-      if (SEVERITY_RANK[this.findings[index]?.severity ?? "error"] < SEVERITY_RANK[this.findings[lowest]?.severity ?? "error"]) {
+      if (SEVERITY_RANK2[this.findings[index]?.severity ?? "error"] < SEVERITY_RANK2[this.findings[lowest]?.severity ?? "error"]) {
         lowest = index;
       }
     }
-    if (rank > SEVERITY_RANK[this.findings[lowest]?.severity ?? "error"]) {
-      this.findings[lowest] = finding;
+    if (rank > SEVERITY_RANK2[this.findings[lowest]?.severity ?? "error"]) {
+      this.findings[lowest] = boundFindingEvidence(finding);
     }
   }
   addAll(findings) {
@@ -2163,15 +2931,15 @@ var FindingCollector = class {
     if (count <= 0) return;
     this.observedFindingsAtLeast += count;
     this.truncated = true;
-    if (SEVERITY_RANK[severity] >= SEVERITY_RANK[this.failOn]) {
+    if (SEVERITY_RANK2[severity] >= SEVERITY_RANK2[this.failOn]) {
       this.failureObserved = true;
     }
   }
   matchLimit(severity) {
-    const rank = SEVERITY_RANK[severity];
+    const rank = SEVERITY_RANK2[severity];
     const freeSlots = this.maximum - this.findings.length;
     const replaceable = this.findings.filter(
-      (finding) => SEVERITY_RANK[finding.severity] < rank
+      (finding) => SEVERITY_RANK2[finding.severity] < rank
     ).length;
     return Math.min(this.maximum + 1, Math.max(1, freeSlots + replaceable + 1));
   }
@@ -2200,12 +2968,26 @@ async function scanArtifacts(input2) {
   for (const file of discovered.files)
     file.kind = adapter.classify(file.relativePath) ?? "unknown";
   const texts = /* @__PURE__ */ new Map();
+  const textValidity = /* @__PURE__ */ new Map();
   const unsupportedTextArtifacts = /* @__PURE__ */ new Set();
+  const encodingFindings = /* @__PURE__ */ new Set();
   let expandedBytes = 0;
-  const readText = async (file) => {
+  const recordInvalidEncoding = (file) => {
+    unsupportedTextArtifacts.add(file.relativePath);
+    if (encodingFindings.has(file.relativePath)) return;
+    encodingFindings.add(file.relativePath);
+    collector.add(encodingFinding(file));
+  };
+  const readText = async (file, reportInvalidEncoding = true) => {
     const cached = texts.get(file.relativePath);
-    if (cached !== void 0) return cached;
+    if (cached !== void 0) {
+      if (reportInvalidEncoding && textValidity.get(file.relativePath) === false && !encodingFindings.has(file.relativePath)) {
+        recordInvalidEncoding(file);
+      }
+      return cached;
+    }
     let text;
+    let valid;
     if (file.kind === "sitemap" && file.relativePath.toLowerCase().endsWith(".gz")) {
       const remaining = limits.maxTotalBytes - expandedBytes;
       const expanded = await readGzipTextStreaming(
@@ -2214,18 +2996,16 @@ async function scanArtifacts(input2) {
         input2.signal
       );
       text = expanded.text;
+      valid = expanded.valid;
       expandedBytes += expanded.outputBytes;
-      if (!expanded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
-        unsupportedTextArtifacts.add(file.relativePath);
-        collector.add(encodingFinding(file));
-      }
     } else {
       const decoded = await readFileStreaming(file, limits, input2.signal);
       text = decoded.text;
-      if (!decoded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
-        unsupportedTextArtifacts.add(file.relativePath);
-        collector.add(encodingFinding(file));
-      }
+      valid = decoded.valid;
+    }
+    textValidity.set(file.relativePath, valid);
+    if (reportInvalidEncoding && !valid && !encodingFindings.has(file.relativePath)) {
+      recordInvalidEncoding(file);
     }
     if (file.kind === "sitemap" || file.kind === "robots") {
       texts.set(file.relativePath, text);
@@ -2247,6 +3027,16 @@ async function scanArtifacts(input2) {
   collector.addAll(routeResult.findings);
   collector.addAll(evaluatedRoutes.findings);
   let filesScanned = 0;
+  const unknownPatternRules = [
+    ...policy.forbidden?.text ?? [],
+    ...policy.forbidden?.endpoints ?? []
+  ].filter(
+    (rule) => !rule.scopes || rule.scopes.includes("all") || rule.scopes.includes("unknown")
+  );
+  const requiresUnknownInspection = unknownPatternRules.length > 0 || policy.sourceMaps?.mode === "forbid";
+  const explicitUnknownInspection = unknownPatternRules.some(
+    (rule) => rule.scopes?.includes("unknown")
+  );
   for (const file of discovered.files) {
     if (input2.signal?.aborted)
       throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
@@ -2270,11 +3060,22 @@ async function scanArtifacts(input2) {
         category: "source-map",
         artifactPath: file.relativePath,
         message: "Source map file is forbidden by policy",
-        evidence: (0, import_node_path7.basename)(file.relativePath)
+        evidence: (0, import_node_path8.basename)(file.relativePath)
       });
     }
-    if (file.kind === "unknown") continue;
-    const text = await readText(file);
+    if (file.kind === "unknown" && !requiresUnknownInspection) {
+      continue;
+    }
+    if (file.kind === "unknown" && hasKnownBinaryExtension(file) && !explicitUnknownInspection) {
+      continue;
+    }
+    const text = await readText(file, file.kind !== "unknown");
+    if (file.kind === "unknown" && textValidity.get(file.relativePath) === false) {
+      unsupportedTextArtifacts.add(file.relativePath);
+      if (explicitUnknownInspection || ambiguousUnknownLooksTextual(text)) {
+        recordInvalidEncoding(file);
+      }
+    }
     filesScanned += 1;
     if (policy.sourceMaps?.mode === "forbid") {
       const directive = /[/#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/giu;
@@ -2287,12 +3088,19 @@ async function scanArtifacts(input2) {
       while ((match = directive.exec(text)) !== null) {
         const inline = match[1]?.startsWith("data:") ?? false;
         if (inline && policy.sourceMaps.inline === "allow") continue;
-        let newline = text.indexOf("\n", locationCursor);
-        while (newline >= 0 && newline < match.index) {
-          line += 1;
-          lineStart = newline + 1;
-          locationCursor = newline + 1;
-          newline = text.indexOf("\n", locationCursor);
+        while (locationCursor < match.index) {
+          const code = text.charCodeAt(locationCursor);
+          if (code === 13) {
+            if (text.charCodeAt(locationCursor + 1) === 10 && locationCursor + 1 < match.index) {
+              locationCursor += 1;
+            }
+            line += 1;
+            lineStart = locationCursor + 1;
+          } else if (code === 10) {
+            line += 1;
+            lineStart = locationCursor + 1;
+          }
+          locationCursor += 1;
         }
         collector.add({
           ruleId: inline ? "SG3002" : "SG3003",
@@ -2339,12 +3147,12 @@ async function scanArtifacts(input2) {
       discovered.files,
       texts,
       evaluatedRoutes.normalized,
-      limits.maxDecodePasses,
-      limits.maxSitemapEntries,
+      limits,
       input2.signal
     )
   );
   const sorted = sortFindings(collector.findings);
+  const truncatedEvidence = sorted.filter((finding) => finding.evidenceTruncated).length;
   return {
     schemaVersion: 1,
     tool: { name: "surfaceguard", version: VERSION },
@@ -2364,6 +3172,9 @@ async function scanArtifacts(input2) {
       findingLimit: limits.maxFindings,
       retainedFindings: sorted.length,
       observedFindingsAtLeast: collector.observedFindingsAtLeast,
+      evidenceDetails: truncatedEvidence === 0 ? "complete" : "truncated",
+      evidenceLimit: MAX_RETAINED_EVIDENCE_BYTES,
+      truncatedEvidence,
       unsupportedTextArtifacts: unsupportedTextArtifacts.size
     },
     failed: collector.failureObserved
@@ -2378,26 +3189,6 @@ function input(name, required = false) {
     throw new SurfaceGuardError("SG_CONFIG_INVALID", `Action input ${name} is required`);
   }
   return value;
-}
-function commandData(value) {
-  return value.replaceAll("%", "%25").replaceAll("\r", "%0D").replaceAll("\n", "%0A");
-}
-function commandProperty(value) {
-  return commandData(value).replaceAll(":", "%3A").replaceAll(",", "%2C");
-}
-function annotation(finding) {
-  const level = finding.severity === "error" ? "error" : finding.severity === "warning" ? "warning" : "notice";
-  const properties = [
-    `title=${commandProperty(`${finding.ruleId}: ${finding.message}`)}`,
-    `file=${commandProperty(finding.artifactPath)}`
-  ];
-  if (finding.location) {
-    properties.push(`line=${finding.location.line}`, `col=${finding.location.column}`);
-  }
-  process.stdout.write(
-    `::${level} ${properties.join(",")}::${commandData(finding.evidence ?? finding.message)}
-`
-  );
 }
 async function setOutput(name, value) {
   const path = process.env.GITHUB_OUTPUT;
@@ -2433,20 +3224,27 @@ async function run() {
     result.completeness.observedFindingsAtLeast.toString()
   );
   await setOutput("text-inspection", result.completeness.textInspection);
+  await setOutput(
+    "evidence-truncated",
+    String((result.completeness.truncatedEvidence ?? 0) > 0)
+  );
+  await setOutput(
+    "truncated-evidence",
+    (result.completeness.truncatedEvidence ?? 0).toString()
+  );
   await setOutput("failed", String(result.failed));
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) await (0, import_promises3.appendFile)(summaryPath, renderMarkdown(result), "utf8");
-  result.findings.forEach(annotation);
-  if (result.failed) {
-    throw new SurfaceGuardError(
-      "SG_IO_ERROR",
-      `SurfaceGuard policy failed. Retained ${result.findings.length} finding detail(s); observed at least ${result.completeness.observedFindingsAtLeast}.`
-    );
+  for (const command of annotationCommands(result.findings)) {
+    process.stdout.write(command);
   }
+  if (result.failed) process.exitCode = 1;
 }
 run().catch((error) => {
   const message = error instanceof SurfaceGuardError ? JSON.stringify(error.toJSON()) : error instanceof Error ? error.message : String(error);
-  process.stdout.write(`::error::${commandData(message)}
-`);
+  process.stdout.write(
+    `::error::${commandData(boundOutputText(message, MAX_RETAINED_MESSAGE_BYTES))}
+`
+  );
   process.exitCode = 1;
 });

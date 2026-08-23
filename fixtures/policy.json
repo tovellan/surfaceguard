@@ -4,7 +4,7 @@
   "failOn": "error",
   "routes": {
     "allow": ["/", "/docs", "/api/status"],
-    "deny": ["/staff/**"],
+    "deny": ["/staff", "/staff/**"],
     "require": ["/docs"]
   },
   "sourceMaps": {

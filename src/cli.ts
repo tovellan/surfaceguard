@@ -25,7 +25,7 @@ const EXAMPLE_POLICY = {
   failOn: 'error',
   routes: {
     allow: ['/**'],
-    deny: ['/staff/**'],
+    deny: ['/staff', '/staff/**'],
   },
   sourceMaps: {
     mode: 'forbid',

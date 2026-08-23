@@ -10,7 +10,7 @@ sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
 SurfaceGuard is not published to npm. Install a released version directly from GitHub:
 
 ```sh
-npm install --save-dev github:tovellan/surfaceguard#v0.5.0
+npm install --save-dev github:tovellan/surfaceguard#v0.5.1
 ```
 
 Node.js 20 or newer is required.
@@ -38,7 +38,7 @@ A minimal policy looks like this:
   "adapter": "nextjs",
   "routes": {
     "allow": ["/**"],
-    "deny": ["/staff/**"]
+    "deny": ["/staff", "/staff/**"]
   },
   "sourceMaps": {
     "mode": "forbid",
@@ -87,8 +87,10 @@ Exit code `0` means the configured threshold passed. Exit code `1` means finding
 Retained findings contain a stable rule ID, severity, category, relative artifact path,
 evidence, and source location when available. Matches found after repeated URL or
 JavaScript escape decoding retain the exact raw artifact evidence and name the transform
-used. Completeness fields distinguish bounded finding details from incomplete text
-inspection, while failure evaluation remains independent from retained details.
+used. Each retained evidence value is limited to 2,048 UTF-8 bytes; a shortened value
+includes its original byte count and SHA-256 digest. Completeness fields distinguish
+bounded finding rows, bounded evidence, and incomplete text inspection, while failure
+evaluation remains independent from retained details.
 
 ## GitHub Action
 
@@ -99,17 +101,19 @@ The action scans an artifact after the application build. Pin a release tag or, 
   run: npm run build
 
 - name: Scan public artifacts
-  uses: tovellan/surfaceguard@v0.5.0
+  uses: tovellan/surfaceguard@v0.5.1
   with:
     artifact: .next
     policy: surfaceguard.policy.json
     sarif: surfaceguard.sarif
 ```
 
-The action writes annotations and a job summary. Its outputs include the retained finding
-count, truncation state, observed-finding lower bound, text-inspection state, and policy
-failure state. Uploading SARIF is a separate repository choice because it needs
-`security-events: write` permission.
+The action writes at most ten annotations per severity level and a Markdown job summary
+bounded to 900 KiB, with exact omission notices when either output is shortened. Its
+outputs include the retained finding count, finding and evidence truncation state,
+observed-finding lower bound, text-inspection state, and policy failure state. SARIF uses
+encoded relative artifact URIs. Uploading SARIF is a separate repository choice because
+it needs `security-events: write` permission.
 
 ## Library API
 
@@ -124,16 +128,26 @@ if (result.failed) {
 }
 ```
 
-The core library does not require application source code or network access. Framework adapters implement artifact classification and route extraction. Custom adapters can implement the exported `FrameworkAdapter` interface.
+The core library does not require application source code or network access. Built-in
+framework adapters implement artifact classification and route extraction. Adapter
+contract types are exported, but `scanArtifacts` currently accepts only the built-in
+adapter names; it does not accept a custom adapter instance.
 
 ## Security properties
 
 - Artifact paths are sorted before scanning for stable output.
 - Symlink roots are rejected and nested symlinks are reported without being followed.
 - Artifact entries, directories, depth, files, bytes, routes, manifest entries, sitemap
-  entries, finding details, decoding passes, and pattern length are bounded.
+  entries, robots directives and comparisons, finding details, decoding passes, and
+  pattern length are bounded.
 - Recognized text accepts valid UTF-8 or BOM-tagged UTF-16LE/BE. Detectable unsupported
   or ambiguous encodings fail closed as `SG1003` while best-effort matching continues.
+- Valid extensionless text is eligible for unscoped text and endpoint rules. Ambiguous
+  unknown content still receives best-effort matching; it emits `SG1003` when explicitly
+  scoped to `unknown` or still predominantly textual. Recognized binary extensions remain
+  uninterpreted unless explicitly scoped to `unknown`.
+- Automatic adapter selection rejects conflicting strong framework or route-manifest
+  signals; select an adapter explicitly for a mixed artifact tree.
 - Invalid policies and malformed route manifests produce machine-readable errors or findings.
 - Literal and regex rules can be scoped to artifact kinds.
 - Regex rules with obvious nested quantifiers are rejected.

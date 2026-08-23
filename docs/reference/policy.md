@@ -17,14 +17,17 @@ SurfaceGuard policies are JSON documents. `schemaVersion` is required and must b
 | `limits`        | object                                       | Resource ceilings.                                                   |
 
 Glob matching uses slash-separated artifact paths. Route patterns match normalized URL paths.
+Automatic adapter selection fails with `SG_CONFIG_INVALID` when an artifact tree has
+conflicting strong Next.js, Astro, Vite, or generic route-manifest signals. Set `adapter`
+explicitly when scanning an intentionally mixed tree.
 
 ## Route assertions
 
 ```json
 {
   "routes": {
-    "allow": ["/", "/docs/**"],
-    "deny": ["/staff/**"],
+    "allow": ["/", "/docs", "/docs/**"],
+    "deny": ["/staff", "/staff/**"],
     "require": ["/docs"]
   }
 }
@@ -33,6 +36,10 @@ Glob matching uses slash-separated artifact paths. Route patterns match normaliz
 When `allow` is present, every discovered route must match at least one pattern. `deny` is evaluated independently. A route matching both lists fails. Each `require` pattern must match at least one produced route.
 
 Route evidence comes from produced manifests. Source directories and route declarations are not read.
+A trailing `/**` matches descendants, not the exact prefix, so list both `/docs` and
+`/docs/**` when both surfaces are intended. Absolute and relative route evidence is
+canonicalized with the configured percent-decoding pass limit; fragments are removed.
+Route assertions compare the normalized path without its query string.
 
 ## Source maps
 
@@ -69,6 +76,13 @@ Metadata rules run only on HTML and web manifest artifacts. Endpoint rules use t
 
 The scanner evaluates raw text, JavaScript hexadecimal escapes, and repeated percent-decoded variants. A finding reports the exact source bytes that produced the decoded match.
 
+Applicable text and endpoint rules also inspect valid text in extensionless or otherwise
+unknown artifacts. Ambiguous content emits `SG1003`, receives best-effort matching, and
+marks text inspection incomplete when explicitly scoped to `unknown` or still
+predominantly textual. Other unrecognized ambiguous content still receives best-effort
+matching and marks inspection incomplete without an encoding finding. Recognized binary
+extensions remain uninterpreted unless explicitly scoped to `unknown`.
+
 ## File rules
 
 ```json
@@ -101,26 +115,42 @@ File rules apply before text classification, so they also cover binary and other
 - Sitemap paths disallowed by robots rules are always reported when sitemap checks run.
 - Sitemap paths missing from route manifests are warnings.
 
-Gzip sitemaps are expanded while streaming. Both the compressed file and expanded output are bounded by `maxFileBytes`, and total expanded sitemap output is bounded by `maxTotalBytes`.
+Sitemap `<loc>` elements are recognized by namespace-local name. Normal text, CDATA,
+predefined and numeric XML entities are combined, while comments and processing
+instructions are ignored. Parsing is one pass and the cumulative `<loc>` count is bounded
+by `maxSitemapEntries`. `DOCTYPE` declarations are rejected with `SG_IO_ERROR` because
+external and custom XML entities are not expanded. Gzip sitemaps are expanded while
+streaming. Both the compressed file and expanded output are bounded by `maxFileBytes`,
+and total expanded sitemap output is bounded by `maxTotalBytes`.
+
+Only the exact root artifact `robots.txt` participates in consistency checks. SurfaceGuard
+conservatively applies every eligible `Disallow:` value it reads. Matching uses the
+sitemap URL's canonical path and query and follows RFC 9309 octet comparison: percent
+encodings of unreserved bytes are normalized, `*` is a wildcard (including across `/`), a
+terminal `$` anchors the end, and an unanchored rule is a prefix. Route policy checks
+continue to use the path without its query.
 
 ## Limits
 
-| Property             |     Default |
-| -------------------- | ----------: |
-| `maxEntries`         |     100,000 |
-| `maxDirectories`     |      10,000 |
-| `maxDepth`           |          64 |
-| `maxFiles`           |      50,000 |
-| `maxFileBytes`       |  16,777,216 |
-| `maxTotalBytes`      | 536,870,912 |
-| `maxRoutes`          |      50,000 |
-| `maxManifestEntries` |     100,000 |
-| `maxSitemapEntries`  |      50,000 |
-| `maxFindings`        |       1,000 |
-| `maxDecodePasses`    |           3 |
-| `maxPatternLength`   |       1,024 |
+| Property               |     Default |
+| ---------------------- | ----------: |
+| `maxEntries`           |     100,000 |
+| `maxDirectories`       |      10,000 |
+| `maxDepth`             |          64 |
+| `maxFiles`             |      50,000 |
+| `maxFileBytes`         |  16,777,216 |
+| `maxTotalBytes`        | 536,870,912 |
+| `maxRoutes`            |      50,000 |
+| `maxManifestEntries`   |     100,000 |
+| `maxSitemapEntries`    |      50,000 |
+| `maxRobotsRules`       |      50,000 |
+| `maxRobotsComparisons` |   1,000,000 |
+| `maxRobotsWork`        |  67,108,864 |
+| `maxFindings`          |       1,000 |
+| `maxDecodePasses`      |           3 |
+| `maxPatternLength`     |       1,024 |
 
-Every override must be a positive safe integer. `maxEntries` and `maxDirectories` bound filesystem discovery before its work queues can grow without limit. `maxDepth` bounds both nested directories and JSON-manifest traversal. `maxRoutes` bounds retained adapter route evidence, `maxManifestEntries` bounds cumulative JSON-manifest traversal, and `maxSitemapEntries` bounds cumulative sitemap `<loc>` entries. Reaching a resource limit returns machine-readable exit code 2. Finding details are capped at `maxFindings`; failure evaluation continues independently. `ScanResult.completeness` reports the retained limit, observed lower bound, finding-detail truncation, and text-inspection state. `statistics.findingsTruncated` is the convenience truncation flag.
+Every override must be a positive safe integer. `maxEntries` and `maxDirectories` bound filesystem discovery before its work queues can grow without limit. `maxDepth` bounds both nested directories and JSON-manifest traversal. `maxRoutes` bounds retained adapter route evidence, `maxManifestEntries` bounds cumulative JSON-manifest traversal, and `maxSitemapEntries` bounds cumulative sitemap `<loc>` entries. `maxRobotsRules` bounds retained `Disallow:` and `Sitemap:` directives; `maxRobotsComparisons` bounds the cumulative sitemap-location-by-`Disallow` comparison product; `maxRobotsWork` bounds total path and pattern characters examined. `maxPatternLength` applies to policy patterns, globs, and retained robots directive values. Reaching a resource limit returns machine-readable exit code 2. Finding details are capped at `maxFindings`; failure evaluation continues independently. Retained evidence and policy-controlled messages are capped at 2,048 UTF-8 bytes, while rule identifiers are capped at 255 bytes. Shortened evidence carries its original byte count and SHA-256 digest. `ScanResult.completeness` reports retained and observed finding counts, finding and evidence truncation, and text-inspection state. `statistics.findingsTruncated` is the convenience finding-row truncation flag.
 
 Recognized text accepts valid UTF-8 or BOM-tagged UTF-16LE/BE. Invalid sequences,
 control bytes, unsupported BOMs, and detectable unsupported HTML, XML, SVG, or CSS

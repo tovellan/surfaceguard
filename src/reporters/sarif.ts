@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 
+import {
+  boundFindingEvidence,
+  MAX_RETAINED_EVIDENCE_BYTES,
+  relativeSarifUri,
+} from '../output-safety.js';
 import type { Finding, ScanResult } from '../types.js';
 
 function fingerprint(finding: Finding): string {
@@ -9,14 +14,21 @@ function fingerprint(finding: Finding): string {
         finding.ruleId,
         finding.artifactPath,
         finding.location?.offset ?? '',
-        finding.evidence ?? '',
+        finding.evidenceSha256
+          ? `sha256:${finding.evidenceSha256}`
+          : (finding.evidence ?? ''),
       ].join('\0'),
     )
     .digest('hex');
 }
 
 export function toSarif(result: ScanResult): Record<string, unknown> {
-  const ruleIds = [...new Set(result.findings.map((finding) => finding.ruleId))].sort();
+  const findings = result.findings.map(boundFindingEvidence);
+  const truncatedEvidence = Math.max(
+    result.completeness.truncatedEvidence ?? 0,
+    findings.filter((finding) => finding.evidenceTruncated).length,
+  );
+  const ruleIds = [...new Set(findings.map((finding) => finding.ruleId))].sort();
   return {
     $schema: 'https://json.schemastore.org/sarif-2.1.0.json',
     version: '2.1.0',
@@ -28,6 +40,9 @@ export function toSarif(result: ScanResult): Record<string, unknown> {
           findingLimit: result.completeness.findingLimit,
           retainedFindings: result.completeness.retainedFindings,
           observedFindingsAtLeast: result.completeness.observedFindingsAtLeast,
+          evidenceDetails: truncatedEvidence === 0 ? 'complete' : 'truncated',
+          evidenceLimit: result.completeness.evidenceLimit ?? MAX_RETAINED_EVIDENCE_BYTES,
+          truncatedEvidence,
           unsupportedTextArtifacts: result.completeness.unsupportedTextArtifacts,
         },
         tool: {
@@ -38,7 +53,7 @@ export function toSarif(result: ScanResult): Record<string, unknown> {
             rules: ruleIds.map((ruleId) => ({ id: ruleId, name: ruleId })),
           },
         },
-        results: result.findings.map((finding) => ({
+        results: findings.map((finding) => ({
           ruleId: finding.ruleId,
           level:
             finding.severity === 'error'
@@ -50,7 +65,7 @@ export function toSarif(result: ScanResult): Record<string, unknown> {
           locations: [
             {
               physicalLocation: {
-                artifactLocation: { uri: finding.artifactPath },
+                artifactLocation: { uri: relativeSarifUri(finding.artifactPath) },
                 ...(finding.location
                   ? {
                       region: {
@@ -66,6 +81,9 @@ export function toSarif(result: ScanResult): Record<string, unknown> {
           properties: {
             category: finding.category,
             evidence: finding.evidence,
+            evidenceTruncated: finding.evidenceTruncated,
+            evidenceBytes: finding.evidenceBytes,
+            evidenceSha256: finding.evidenceSha256,
             transform: finding.transform,
           },
         })),

@@ -68,6 +68,9 @@
         "maxRoutes": { "$ref": "#/$defs/positiveInteger" },
         "maxManifestEntries": { "$ref": "#/$defs/positiveInteger" },
         "maxSitemapEntries": { "$ref": "#/$defs/positiveInteger" },
+        "maxRobotsRules": { "$ref": "#/$defs/positiveInteger" },
+        "maxRobotsComparisons": { "$ref": "#/$defs/positiveInteger" },
+        "maxRobotsWork": { "$ref": "#/$defs/positiveInteger" },
         "maxFindings": { "$ref": "#/$defs/positiveInteger" },
         "maxDecodePasses": { "$ref": "#/$defs/positiveInteger" },
         "maxPatternLength": { "$ref": "#/$defs/positiveInteger" }
@@ -76,7 +79,11 @@
   },
   "$defs": {
     "severity": { "enum": ["error", "warning", "note"] },
-    "positiveInteger": { "type": "integer", "minimum": 1 },
+    "positiveInteger": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9007199254740991
+    },
     "stringList": {
       "type": "array",
       "items": { "type": "string", "minLength": 1 },
@@ -101,7 +108,11 @@
       "additionalProperties": false,
       "required": ["id", "pattern"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]+$",
+          "maxLength": 255
+        },
         "pattern": { "type": "string", "minLength": 1 },
         "match": { "enum": ["literal", "regex"] },
         "caseSensitive": { "type": "boolean" },
@@ -111,7 +122,7 @@
           "items": { "$ref": "#/$defs/scope" },
           "uniqueItems": true
         },
-        "message": { "type": "string" }
+        "message": { "type": "string", "maxLength": 2048 }
       }
     },
     "patternRules": {
@@ -123,10 +134,14 @@
       "additionalProperties": false,
       "required": ["id", "glob"],
       "properties": {
-        "id": { "type": "string", "pattern": "^[a-z][a-z0-9._-]+$" },
+        "id": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9._-]+$",
+          "maxLength": 255
+        },
         "glob": { "type": "string", "minLength": 1 },
         "severity": { "$ref": "#/$defs/severity" },
-        "message": { "type": "string" }
+        "message": { "type": "string", "maxLength": 2048 }
       }
     }
   }

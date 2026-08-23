@@ -4,6 +4,22 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 
 ## Unreleased
 
+## 0.5.1 - 2026-08-24
+
+- Rejected ambiguous automatic adapter signals and recognized the current Next.js App Router route manifest.
+- Validated known Next.js manifest containers and required route fields before collection.
+- Canonicalized mixed and repeatedly encoded absolute URLs without losing raw evidence spans.
+- Parsed namespace-qualified sitemap locations, CDATA, comments, processing instructions, and XML entities in one bounded pass.
+- Preserved reserved percent octets for RFC 9309-style robots matching and added directive, comparison, and character-work ceilings.
+- Rejected sitemap `DOCTYPE` declarations instead of silently ignoring custom or external entities.
+- Scanned valid extensionless text and failed closed on explicitly scoped or predominantly textual ambiguous unknown artifacts.
+- Eagerly rejected unusable globs, regular expressions, duplicate list values, oversized output fields, and unsafe integers.
+- Generated both exact and descendant starter route denials so `surfaceguard init` matches documented glob semantics.
+- Preserved exact empty evidence and raw boundaries for zero-width decoded matches and added JavaScript code-point escape decoding.
+- Bounded evidence, messages, Markdown summaries, Action annotations, and SARIF artifact URIs while retaining digest-backed omission evidence.
+- Kept additive robots limits and evidence-completeness fields optional in exported interfaces for patch-level TypeScript compatibility.
+- Staged release notes and package assets in a draft so publication exposes the notes and complete archive together.
+
 ## 0.5.0 - 2026-08-24
 
 - Recognized common numbered and index gzip sitemap filenames.

@@ -6,6 +6,7 @@ export interface SourceSpan {
 export interface DecodedText {
   text: string;
   spans: SourceSpan[];
+  sourceLength?: number;
   transform: string;
 }
 
@@ -24,8 +25,13 @@ function sourceSpanAt(input: DecodedText, index: number): SourceSpan | undefined
     : input.spans[index];
 }
 
+function originalSourceLength(input: DecodedText): number {
+  return input.sourceLength ?? input.spans.at(-1)?.end ?? input.text.length;
+}
+
 function decodeHexEscapes(input: DecodedText): DecodedText | undefined {
-  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4})/iu.test(input.text)) return undefined;
+  if (!/\\(?:x[0-9a-f]{2}|u[0-9a-f]{4}|u\{[0-9a-f]{1,6}\})/iu.test(input.text))
+    return undefined;
   let output = '';
   const spans: SourceSpan[] = [];
   let changed = false;
@@ -34,13 +40,25 @@ function decodeHexEscapes(input: DecodedText): DecodedText | undefined {
     const escaped = input.text[index] === '\\';
     const short = escaped ? /^\\x([0-9a-f]{2})/iu.exec(input.text.slice(index)) : null;
     const long = escaped ? /^\\u([0-9a-f]{4})/iu.exec(input.text.slice(index)) : null;
-    const match = long ?? short;
+    const braced = escaped
+      ? /^\\u\{([0-9a-f]{1,6})\}/iu.exec(input.text.slice(index))
+      : null;
+    const bracedCodePoint = braced?.[1] ? Number.parseInt(braced[1], 16) : undefined;
+    const match =
+      bracedCodePoint !== undefined && bracedCodePoint <= 0x10ffff
+        ? braced
+        : (long ?? short);
     if (match?.[1]) {
       const width = match[0].length;
-      output += String.fromCodePoint(Number.parseInt(match[1], 16));
+      const decoded = String.fromCodePoint(Number.parseInt(match[1], 16));
+      output += decoded;
       const first = sourceSpanAt(input, index);
       const last = sourceSpanAt(input, index + width - 1);
-      if (first && last) spans.push({ start: first.start, end: last.end });
+      if (first && last) {
+        const span = { start: first.start, end: last.end };
+        spans.push(span);
+        if (decoded.length === 2) spans.push(span);
+      }
       index += width - 1;
       changed = true;
       continue;
@@ -51,7 +69,12 @@ function decodeHexEscapes(input: DecodedText): DecodedText | undefined {
   }
 
   return changed
-    ? { text: output, spans, transform: `${input.transform}+js-hex` }
+    ? {
+        text: output,
+        spans,
+        sourceLength: originalSourceLength(input),
+        transform: `${input.transform}+js-hex`,
+      }
     : undefined;
 }
 
@@ -179,15 +202,10 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
         byteIndex += width;
       }
       const segmentEnd = byteIndex;
-      const rawStart = runStart + segmentStart * 3;
-      const rawEnd = runStart + segmentEnd * 3;
-      const decodedFirst = sourceSpanAt(input, rawStart);
-      const decodedLast = sourceSpanAt(input, rawEnd - 1);
-      if (!decodedFirst || !decodedLast) continue;
-
       let scalar = segmentStart;
       let firstScalar = true;
       while (scalar < segmentEnd) {
+        const scalarStart = scalar;
         const width = utf8ScalarWidth(bytes, scalar);
         const codePoint = utf8CodePoint(bytes, scalar, width);
         scalar += width;
@@ -196,11 +214,17 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
           continue;
         }
         firstScalar = false;
+        const rawStart = runStart + scalarStart * 3;
+        const rawEnd = runStart + scalar * 3;
+        const decodedFirst = sourceSpanAt(input, rawStart);
+        const decodedLast = sourceSpanAt(input, rawEnd - 1);
+        if (!decodedFirst || !decodedLast) continue;
+        const decodedSpan = { start: decodedFirst.start, end: decodedLast.end };
         const decoded = String.fromCodePoint(codePoint);
         output.push(decoded);
-        spans.push({ start: decodedFirst.start, end: decodedLast.end });
+        spans.push(decodedSpan);
         if (decoded.length === 2) {
-          spans.push({ start: decodedFirst.start, end: decodedLast.end });
+          spans.push(decodedSpan);
         }
       }
       changed = true;
@@ -208,7 +232,12 @@ function decodePercent(input: DecodedText): DecodedText | undefined {
   }
 
   return changed
-    ? { text: output.join(''), spans, transform: `${input.transform}+percent` }
+    ? {
+        text: output.join(''),
+        spans,
+        sourceLength: originalSourceLength(input),
+        transform: `${input.transform}+percent`,
+      }
     : undefined;
 }
 
@@ -220,6 +249,7 @@ function variantsForText(
   const original: DecodedText = {
     text,
     spans: materializeIdentitySpans ? identitySpans(text) : [],
+    sourceLength: text.length,
     transform: 'raw',
   };
   if (!materializeIdentitySpans) IDENTITY_SPAN_VARIANTS.add(original);
@@ -257,6 +287,18 @@ export function rawSpanForMatch(
   start: number,
   length: number,
 ): SourceSpan | undefined {
+  if (length === 0) {
+    if (IDENTITY_SPAN_VARIANTS.has(variant)) return { start, end: start };
+    if (start === 0 && variant.text.length === 0) {
+      const boundary = originalSourceLength(variant);
+      return { start: boundary, end: boundary };
+    }
+    const boundary =
+      start < variant.text.length
+        ? sourceSpanAt(variant, start)?.start
+        : sourceSpanAt(variant, start - 1)?.end;
+    return boundary === undefined ? undefined : { start: boundary, end: boundary };
+  }
   const first = sourceSpanAt(variant, start);
   const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
   return first && last ? { start: first.start, end: last.end } : undefined;
@@ -332,11 +374,37 @@ export function repeatedlyDecodeUrl(value: string, maxPasses = 3): string {
   return current;
 }
 
+const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/iu;
+
+function independentlyParseAbsoluteUrl(
+  value: string,
+  maxPasses: number,
+): { url: URL; passes: number } | undefined {
+  let current = value;
+
+  for (let pass = 0; pass <= maxPasses; pass += 1) {
+    if (ABSOLUTE_URL.test(current)) {
+      try {
+        return { url: new URL(current), passes: pass };
+      } catch {
+        // A scheme can be visible before its encoded authority separators are.
+      }
+    }
+    if (pass === maxPasses) break;
+    const decoded = decodePercentText(current);
+    if (!decoded || decoded === current) return undefined;
+    current = decoded;
+  }
+  return undefined;
+}
+
 export function canonicalizeUrl(value: string, maxPasses = 3): string {
   const input = value.trim().replaceAll('\\', '/');
-  const absolute = /^[a-z][a-z\d+.-]*:/iu.test(input);
-  const url = new URL(input, 'https://surfaceguard.invalid');
-  url.pathname = repeatedlyDecodeUrl(url.pathname, maxPasses)
+  const absolute = independentlyParseAbsoluteUrl(input, maxPasses);
+  const remainingPasses = maxPasses - (absolute?.passes ?? 0);
+  const relative = input.replace(/^\/{2,}/u, '/');
+  const url = absolute?.url ?? new URL(relative, 'https://surfaceguard.invalid');
+  url.pathname = repeatedlyDecodeUrl(url.pathname, remainingPasses)
     .replaceAll('\\', '/')
     .replace(/\/{2,}/gu, '/');
   url.hash = '';

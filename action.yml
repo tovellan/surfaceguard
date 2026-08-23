@@ -24,6 +24,10 @@ outputs:
     description: Lower bound on findings observed during scan evaluation
   text-inspection:
     description: Text inspection completeness, either complete or incomplete
+  evidence-truncated:
+    description: Whether any retained evidence value was shortened to its bounded prefix
+  truncated-evidence:
+    description: Number of retained evidence values shortened to bounded prefixes
   failed:
     description: Whether findings met the configured failure threshold
 runs:

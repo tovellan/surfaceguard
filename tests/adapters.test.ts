@@ -56,6 +56,14 @@ describe('framework adapters', () => {
         '/one/two/@modal/(..)(..)archive/page': 'archive.js',
         '/one/@modal/(...)root/page': 'root.js',
         '/_not-found/page': 'not-found.js',
+        '/_global-error/page': 'global-error.js',
+      },
+      'app-path-routes-manifest.json': {
+        '/page': '/',
+        '/docs/page': '/docs',
+        '/favicon.ico/route': '/favicon.ico',
+        '/_not-found/page': '/_not-found',
+        '/_global-error/page': '/_global-error',
       },
       'build-manifest.json': { pages: { '/pricing': ['pricing.js'] } },
       'prerender-manifest.json': {
@@ -97,11 +105,94 @@ describe('framework adapters', () => {
         '/data',
         '/old',
         '/legacy',
+        '/favicon.ico',
       ]),
     );
     expect(result.findings).toEqual([]);
     expect(result.routes.map((item) => item.route)).not.toContain('/_not-found');
+    expect(result.routes.map((item) => item.route)).not.toContain('/_global-error');
     expect(nextjsAdapter.detect(files)).toBeGreaterThan(10);
+  });
+
+  it.each<[string, unknown, string]>([
+    ['build-manifest.json', { pages: ['/private'] }, 'pages must be an object'],
+    ['prerender-manifest.json', { routes: ['/private'] }, 'routes must be an object'],
+    [
+      'routes-manifest.json',
+      { staticRoutes: { '/private': {} } },
+      'staticRoutes must be an array of objects',
+    ],
+    [
+      'routes-manifest.json',
+      { rewrites: '/private' },
+      'rewrites must be an array or grouped object',
+    ],
+    [
+      'routes-manifest.json',
+      { rewrites: { beforeFiles: { source: '/private' } } },
+      'rewrites.beforeFiles must be an array of objects',
+    ],
+    [
+      'routes-manifest.json',
+      { staticRoutes: [{ page: 42 }] },
+      'staticRoutes[0] must name a non-empty absolute route string',
+    ],
+    [
+      'routes-manifest.json',
+      { redirects: [{}] },
+      'redirects[0] must name a non-empty absolute route string',
+    ],
+    [
+      'routes-manifest.json',
+      { rewrites: [{ source: '' }] },
+      'rewrites[0] must name a non-empty absolute route string',
+    ],
+    [
+      'routes-manifest.json',
+      { rewrites: { fallback: [{ source: 42 }] } },
+      'rewrites.fallback[0] must name a non-empty absolute route string',
+    ],
+    [
+      'app-path-routes-manifest.json',
+      { '/page': 42 },
+      '/page must name a non-empty absolute route string',
+    ],
+  ])('reports malformed known fields in %s', async (relativePath, content, evidence) => {
+    const manifest = file(relativePath);
+    const result = await nextjsAdapter.collectRoutes({
+      root: '/',
+      files: [manifest],
+      limits: DEFAULT_LIMITS,
+      readText: () => Promise.resolve(JSON.stringify(content)),
+    });
+    expect(result.routes).toEqual([]);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'SG1004',
+        artifactPath: relativePath,
+      }),
+    );
+    expect(result.findings[0]?.evidence).toContain(evidence);
+  });
+
+  it('keeps optional and unknown Next manifest fields compatible', async () => {
+    const manifest = file('routes-manifest.json');
+    const result = await nextjsAdapter.collectRoutes({
+      root: '/',
+      files: [manifest],
+      limits: DEFAULT_LIMITS,
+      readText: () =>
+        Promise.resolve(
+          JSON.stringify({
+            version: 3,
+            staticRoutes: [{ page: '/public', extra: true }],
+            rewrites: { beforeFiles: [{ source: '/legacy' }], futureGroup: 'ignored' },
+            futureSection: { enabled: true },
+          }),
+        ),
+    });
+    expect(result.findings).toEqual([]);
+    expect(result.routes.map((route) => route.route)).toEqual(['/public', '/legacy']);
   });
 
   it('collects generic nested route keys without treating unrelated strings as routes', async () => {
@@ -221,6 +312,56 @@ describe('framework adapters', () => {
     expect(astroAdapter.classify('server/render.mjs')).toBe('server-bundle');
     expect(astroAdapter.detect([file('_astro/page.abc123.js', 'client-chunk')])).toBe(0);
     expect(astroAdapter.detect([file('index.html', 'metadata')])).toBe(0);
+  });
+
+  it('fails closed when auto detection sees conflicting framework signals', () => {
+    const files = [
+      file('server/pages-manifest.json'),
+      file('index.html', 'metadata'),
+      file('_astro/page.js', 'client-chunk'),
+    ];
+    expect(() => selectAdapter('auto', files)).toThrow(
+      /conflicting adapter signals \(nextjs, astro\).*explicitly/u,
+    );
+    expect(selectAdapter('nextjs', files)).toBe(nextjsAdapter);
+    expect(selectAdapter('astro', files)).toBe(astroAdapter);
+  });
+
+  it.each<[string, ArtifactFile[], string[]]>([
+    [
+      'Astro and Vite',
+      [
+        file('index.html', 'metadata'),
+        file('_astro/page.js', 'client-chunk'),
+        file('.vite/manifest.json', 'metadata'),
+      ],
+      ['astro', 'vite'],
+    ],
+    [
+      'a generic route manifest and Vite',
+      [file('route-manifest.json'), file('.vite/manifest.json', 'metadata')],
+      ['vite', 'generic-route-manifest'],
+    ],
+  ])('reports conflict details for %s', (_label, files, signals) => {
+    try {
+      selectAdapter('auto', files);
+      throw new Error('Expected auto adapter selection to fail');
+    } catch (error) {
+      expect(error).toBeInstanceOf(SurfaceGuardError);
+      expect((error as SurfaceGuardError).code).toBe('SG_CONFIG_INVALID');
+      expect((error as SurfaceGuardError).details).toEqual({ signals });
+    }
+  });
+
+  it('selects generic for an unambiguous generic route manifest', () => {
+    expect(selectAdapter('auto', [file('server/route-manifest.json')])).toBe(
+      genericAdapter,
+    );
+  });
+
+  it('treats modern App Router route output as a Next signal, not a generic conflict', () => {
+    const files = [file('routes-manifest.json'), file('app-path-routes-manifest.json')];
+    expect(selectAdapter('auto', files)).toBe(nextjsAdapter);
   });
 
   it('collects Vite HTML entry routes without treating manifest keys as URLs', async () => {

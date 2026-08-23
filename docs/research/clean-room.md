@@ -8,12 +8,15 @@ SurfaceGuard was designed independently for pre-deployment inspection of produce
 
 - [Next.js production browser source maps](https://nextjs.org/docs/pages/api-reference/config/next-config-js/productionBrowserSourceMaps) documents that enabled production browser maps are emitted beside JavaScript and served automatically.
 - [Next.js adapter output types](https://nextjs.org/docs/app/api-reference/adapters/output-types) documents current categories for pages, API routes, app routes, prerenders, static files, and middleware.
+- [Next.js shared output constants](https://github.com/vercel/next.js/blob/canary/packages/next/src/shared/lib/constants.ts) names the current Pages, App Router, build, prerender, and routes manifest files, including `app-path-routes-manifest.json`.
 - [Next.js output file tracing](https://nextjs.org/docs/15/app/api-reference/config/next-config-js/output) explains how production dependencies are represented in output tracing files.
 - [Vite HTML features](https://vite.dev/guide/features.html#html) defines HTML entry points and their directly accessible URL paths.
 - [Vite backend integration](https://vite.dev/guide/backend-integration.html) defines the default `.vite/manifest.json` production shape and distinguishes entry chunks from assets and dynamic imports.
 - [Astro configuration](https://docs.astro.build/en/reference/configuration-reference/) defines static output, the default `dist` output directory, the reserved `_astro` asset directory, and the `directory`, `file`, and `preserve` HTML output formats.
 - [Astro routing](https://docs.astro.build/en/guides/routing/) defines the static page routes represented by generated HTML output and identifies `_astro/` as a reserved route.
 - [GitHub SARIF support](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support) defines the supported SARIF subset, relative artifact locations, and stable fingerprints.
+- [GitHub Actions workflow commands](https://docs.github.com/en/actions/reference/workflows-and-actions/workflow-commands) defines annotation escaping and the 1 MiB per-step job-summary limit.
+- [RFC 9309](https://www.rfc-editor.org/rfc/rfc9309.html) defines robots path-prefix matching, reserved and unreserved percent-octet comparison, `*`, `$`, and the exact root lowercase `/robots.txt` location.
 - [Gitleaks](https://github.com/gitleaks/gitleaks) establishes the maintained secret-scanning category and its directory, Git, and SARIF workflows.
 - [JS Recon](https://github.com/js-recon/js-recon) demonstrates live-site JavaScript enumeration, endpoint extraction, and source-map reconstruction.
 - [Sitemap Validator](https://github.com/trybyte-app/sitemap-validator) documents standards-focused XML validation, robots auditing, and bounded live checks.

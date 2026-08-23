@@ -7,3 +7,6 @@
 - 2026-08-24: Released versions 0.2.0 and 0.3.0, then prepared version 0.4.0 with bounded streaming gzip sitemap expansion.
 - 2026-08-24: Prepared version 0.5.0 with Astro support and fail-closed encoding,
   report, decoding, identity, and resource controls.
+- 2026-08-24: Prepared version 0.5.1 with canonical URL, sitemap/robots, adapter,
+  policy-validation, unknown-artifact, and bounded-output hardening after an independent
+  adversarial review.

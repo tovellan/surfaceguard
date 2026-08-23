@@ -71,6 +71,9 @@ export interface ScanLimits {
   maxRoutes: number;
   maxManifestEntries: number;
   maxSitemapEntries: number;
+  maxRobotsRules?: number;
+  maxRobotsComparisons?: number;
+  maxRobotsWork?: number;
   maxFindings: number;
   maxDecodePasses: number;
   maxPatternLength: number;
@@ -119,6 +122,9 @@ export interface Finding {
   artifactPath: string;
   message: string;
   evidence?: string;
+  evidenceTruncated?: boolean;
+  evidenceBytes?: number;
+  evidenceSha256?: string;
   location?: FindingLocation;
   help?: string;
   transform?: string;
@@ -138,6 +144,9 @@ export interface ScanCompleteness {
   findingLimit: number;
   retainedFindings: number;
   observedFindingsAtLeast: number;
+  evidenceDetails?: 'complete' | 'truncated';
+  evidenceLimit?: number;
+  truncatedEvidence?: number;
   unsupportedTextArtifacts: number;
 }
 

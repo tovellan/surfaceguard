@@ -55,6 +55,9 @@ interface ScanLimits {
     maxRoutes: number;
     maxManifestEntries: number;
     maxSitemapEntries: number;
+    maxRobotsRules?: number;
+    maxRobotsComparisons?: number;
+    maxRobotsWork?: number;
     maxFindings: number;
     maxDecodePasses: number;
     maxPatternLength: number;
@@ -89,6 +92,9 @@ interface Finding {
     artifactPath: string;
     message: string;
     evidence?: string;
+    evidenceTruncated?: boolean;
+    evidenceBytes?: number;
+    evidenceSha256?: string;
     location?: FindingLocation;
     help?: string;
     transform?: string;
@@ -106,6 +112,9 @@ interface ScanCompleteness {
     findingLimit: number;
     retainedFindings: number;
     observedFindingsAtLeast: number;
+    evidenceDetails?: 'complete' | 'truncated';
+    evidenceLimit?: number;
+    truncatedEvidence?: number;
     unsupportedTextArtifacts: number;
 }
 interface ScanResult {
@@ -154,7 +163,7 @@ declare const viteAdapter: FrameworkAdapter;
 
 declare const adapters: readonly FrameworkAdapter[];
 
-declare const VERSION = "0.5.0";
+declare const VERSION = "0.5.1";
 declare const DEFAULT_LIMITS: Readonly<ScanLimits>;
 
 interface SourceSpan {
@@ -164,6 +173,7 @@ interface SourceSpan {
 interface DecodedText {
     text: string;
     spans: SourceSpan[];
+    sourceLength?: number;
     transform: string;
 }
 declare function decodeTextVariants(text: string, maxPasses: number): DecodedText[];
