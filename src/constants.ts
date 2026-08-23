@@ -1,6 +1,6 @@
 import type { ScanLimits } from './types.js';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.1.1';
 
 export const DEFAULT_LIMITS: Readonly<ScanLimits> = Object.freeze({
   maxFiles: 50_000,

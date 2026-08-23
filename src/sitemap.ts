@@ -1,12 +1,19 @@
 import { canonicalizeUrl } from './decode.js';
 
 function decodeXml(value: string): string {
-  return value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&apos;', "'");
+  const entities = {
+    amp: '&',
+    lt: '<',
+    gt: '>',
+    quot: '"',
+    apos: "'",
+  } as const;
+  return value.replace(
+    /&(amp|lt|gt|quot|apos);/gu,
+    (_match, name: keyof typeof entities) => {
+      return entities[name];
+    },
+  );
 }
 
 export function parseSitemap(text: string, maxDecodePasses: number): string[] {

@@ -28,7 +28,7 @@ var import_promises = require("fs/promises");
 var import_node_path = require("path");
 
 // src/constants.ts
-var VERSION = "0.1.0";
+var VERSION = "0.1.1";
 var DEFAULT_LIMITS = Object.freeze({
   maxFiles: 5e4,
   maxFileBytes: 16 * 1024 * 1024,
@@ -1055,7 +1055,19 @@ function matchPatternRule(raw, file, rule, category, limits) {
 
 // src/sitemap.ts
 function decodeXml(value) {
-  return value.replaceAll("&amp;", "&").replaceAll("&lt;", "<").replaceAll("&gt;", ">").replaceAll("&quot;", '"').replaceAll("&apos;", "'");
+  const entities = {
+    amp: "&",
+    lt: "<",
+    gt: ">",
+    quot: '"',
+    apos: "'"
+  };
+  return value.replace(
+    /&(amp|lt|gt|quot|apos);/gu,
+    (_match, name) => {
+      return entities[name];
+    }
+  );
 }
 function parseSitemap(text, maxDecodePasses) {
   const routes = [];
