@@ -8,6 +8,17 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 
 - Included every repository document linked from the packaged README and verified those
   relative links during clean-install testing.
+- Rejected an empty route allow list instead of silently disabling allow-list checks.
+- Collected direct string entries from generic `routes` arrays without admitting
+  unrelated manifest strings.
+- Kept sitemap-index and extension namespace locations out of page-route and robots
+  reconciliation.
+- Excluded framework-owned Astro and Next.js error documents from sitemap completeness
+  requirements.
+- Split release verification from publication so repository code runs with read-only
+  permissions and no persisted Git credential.
+- Required release dispatches to run from the protected main workflow and resolve an
+  exact annotated semantic-version tag at the current main commit.
 
 ## 0.5.1 - 2026-08-24
 

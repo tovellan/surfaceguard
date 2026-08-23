@@ -1,7 +1,16 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { access, copyFile, cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import {
+  access,
+  copyFile,
+  cp,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+} from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 const project = resolve(import.meta.dirname, '..');
 const temporary = await mkdtemp(join(tmpdir(), 'surfaceguard-install-'));
@@ -20,6 +29,13 @@ function run(command, args, expected = 0) {
   return result;
 }
 
+function isContained(root, target) {
+  const child = relative(root, target);
+  return (
+    child === '' || (child !== '..' && !child.startsWith(`..${sep}`) && !isAbsolute(child))
+  );
+}
+
 try {
   execFileSync('npm', ['pack', '--silent', '--pack-destination', temporary], {
     cwd: project,
@@ -29,14 +45,39 @@ try {
   if (!packed) throw new Error('npm pack did not create an archive');
   const archive = join(temporary, basename(packed));
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', archive]);
-  const installedRoot = join(temporary, 'node_modules', '@tovellan', 'surfaceguard');
-  const installedReadme = await readFile(join(installedRoot, 'README.md'), 'utf8');
-  const relativeLinks = [...installedReadme.matchAll(/\]\((?!https?:|#)([^)]+)\)/gu)].map(
-    (match) => match[1],
+  const installedRoot = await realpath(
+    join(temporary, 'node_modules', '@tovellan', 'surfaceguard'),
   );
+  const installedReadme = await readFile(join(installedRoot, 'README.md'), 'utf8');
+  const relativeLinks = [
+    ...installedReadme.matchAll(
+      /\]\(\s*(?:<([^>]+)>|([^\s)]+))(?:\s+(?:"[^"]*"|'[^']*'|\([^)]*\)))?\s*\)/gu,
+    ),
+  ]
+    .map((match) => match[1] ?? match[2])
+    .filter(
+      (destination) =>
+        destination !== undefined &&
+        !/^[a-z][a-z\d+.-]*:/iu.test(destination) &&
+        !destination.startsWith('//') &&
+        !destination.startsWith('#'),
+    );
   for (const relativeLink of relativeLinks) {
     if (!relativeLink) continue;
-    await access(join(installedRoot, relativeLink));
+    const linkPath = relativeLink.split(/[?#]/u, 1)[0];
+    if (!linkPath) continue;
+    const target = resolve(installedRoot, decodeURIComponent(linkPath));
+    if (!isContained(installedRoot, target)) {
+      throw new Error(
+        `Packaged README link escapes the installed package: ${relativeLink}`,
+      );
+    }
+    await access(target);
+    if (!isContained(installedRoot, await realpath(target))) {
+      throw new Error(
+        `Packaged README link resolves outside the installed package: ${relativeLink}`,
+      );
+    }
   }
   await cp(join(project, 'fixtures'), join(temporary, 'fixtures'), { recursive: true });
   await copyFile(join(project, 'examples/library.mjs'), join(temporary, 'library.mjs'));
