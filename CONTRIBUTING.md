@@ -39,10 +39,4 @@ The full release gate creates a package tarball in a temporary directory, instal
 - Preserve relative paths and bounded resource use in reports.
 - Update `CHANGELOG.md` for user-visible changes.
 
-All commits require review, passing CI, and the Developer Certificate of Origin sign-off shown below:
-
-```text
-Signed-off-by: Contributor <contributor@example.invalid>
-```
-
-By signing off, contributors certify the contribution under the Developer Certificate of Origin 1.1.
+All commits require review and passing CI. Use the configured Git identity as the sole author. Do not add authorship, co-author, generator, or sign-off trailers.
