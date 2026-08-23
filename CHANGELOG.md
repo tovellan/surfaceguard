@@ -4,7 +4,18 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 
 ## Unreleased
 
+## 0.5.0 - 2026-08-24
+
 - Recognized common numbered and index gzip sitemap filenames.
+- Added an Astro adapter for produced static HTML routes and client assets.
+- Made finding caps severity-aware without allowing omitted findings to hide failure.
+- Reported finding-detail and text-inspection completeness in JSON, Markdown, and SARIF.
+- Scanned valid BOM-tagged UTF-16 and failed closed on ambiguous or unsupported text.
+- Decoded valid percent-encoded segments in linear work even beside malformed bytes.
+- Decoded valid decimal and hexadecimal XML references in sitemap locations.
+- Bounded artifact entries, directories, depth, routes, manifests, and sitemap entries.
+- Rejected artifact identity, size, and symlink changes between discovery and reading.
+- Preserved literal percent signs and URL delimiters in Astro and Vite filesystem routes.
 
 ## 0.4.0 - 2026-08-24
 

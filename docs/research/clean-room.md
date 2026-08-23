@@ -11,6 +11,8 @@ SurfaceGuard was designed independently for pre-deployment inspection of produce
 - [Next.js output file tracing](https://nextjs.org/docs/15/app/api-reference/config/next-config-js/output) explains how production dependencies are represented in output tracing files.
 - [Vite HTML features](https://vite.dev/guide/features.html#html) defines HTML entry points and their directly accessible URL paths.
 - [Vite backend integration](https://vite.dev/guide/backend-integration.html) defines the default `.vite/manifest.json` production shape and distinguishes entry chunks from assets and dynamic imports.
+- [Astro configuration](https://docs.astro.build/en/reference/configuration-reference/) defines static output, the default `dist` output directory, the reserved `_astro` asset directory, and the `directory`, `file`, and `preserve` HTML output formats.
+- [Astro routing](https://docs.astro.build/en/guides/routing/) defines the static page routes represented by generated HTML output and identifies `_astro/` as a reserved route.
 - [GitHub SARIF support](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support) defines the supported SARIF subset, relative artifact locations, and stable fingerprints.
 - [Gitleaks](https://github.com/gitleaks/gitleaks) establishes the maintained secret-scanning category and its directory, Git, and SARIF workflows.
 - [JS Recon](https://github.com/js-recon/js-recon) demonstrates live-site JavaScript enumeration, endpoint extraction, and source-map reconstruction.

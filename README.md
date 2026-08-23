@@ -2,12 +2,15 @@
 
 SurfaceGuard verifies produced web build artifacts against an explicit public-surface policy. It checks what a deployment would contain instead of trusting source folders, route declarations, or framework conventions.
 
-The 0.4 series provides a framework-neutral TypeScript library and command line interface, plus Next.js and Vite adapters and a GitHub Action. It scans route manifests, client chunks, server bundles, static assets, source maps, plain or gzip sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
+The 0.5 series provides a framework-neutral TypeScript library and command line
+interface, plus Next.js, Vite, and static Astro adapters and a GitHub Action. It scans
+route manifests, client chunks, server bundles, static assets, source maps, plain or gzip
+sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
 
 SurfaceGuard is not published to npm. Install a released version directly from GitHub:
 
 ```sh
-npm install --save-dev github:tovellan/surfaceguard#v0.4.0
+npm install --save-dev github:tovellan/surfaceguard#v0.5.0
 ```
 
 Node.js 20 or newer is required.
@@ -81,7 +84,11 @@ npx surfaceguard scan .next \
 
 Exit code `0` means the configured threshold passed. Exit code `1` means findings met the threshold. Exit code `2` is a configuration, input, resource, or runtime error. Runtime errors are emitted as one JSON object on stderr.
 
-Findings contain a stable rule ID, severity, category, relative artifact path, evidence, and source location when available. Matches found after repeated URL or JavaScript escape decoding retain the exact raw artifact evidence and name the transform used.
+Retained findings contain a stable rule ID, severity, category, relative artifact path,
+evidence, and source location when available. Matches found after repeated URL or
+JavaScript escape decoding retain the exact raw artifact evidence and name the transform
+used. Completeness fields distinguish bounded finding details from incomplete text
+inspection, while failure evaluation remains independent from retained details.
 
 ## GitHub Action
 
@@ -92,14 +99,17 @@ The action scans an artifact after the application build. Pin a release tag or, 
   run: npm run build
 
 - name: Scan public artifacts
-  uses: tovellan/surfaceguard@v0.4.0
+  uses: tovellan/surfaceguard@v0.5.0
   with:
     artifact: .next
     policy: surfaceguard.policy.json
     sarif: surfaceguard.sarif
 ```
 
-The action writes annotations and a job summary. Uploading SARIF is a separate repository choice because it needs `security-events: write` permission.
+The action writes annotations and a job summary. Its outputs include the retained finding
+count, truncation state, observed-finding lower bound, text-inspection state, and policy
+failure state. Uploading SARIF is a separate repository choice because it needs
+`security-events: write` permission.
 
 ## Library API
 
@@ -120,7 +130,10 @@ The core library does not require application source code or network access. Fra
 
 - Artifact paths are sorted before scanning for stable output.
 - Symlink roots are rejected and nested symlinks are reported without being followed.
-- File count, individual file size, total bytes, finding count, decoding passes, and pattern length are bounded.
+- Artifact entries, directories, depth, files, bytes, routes, manifest entries, sitemap
+  entries, finding details, decoding passes, and pattern length are bounded.
+- Recognized text accepts valid UTF-8 or BOM-tagged UTF-16LE/BE. Detectable unsupported
+  or ambiguous encodings fail closed as `SG1003` while best-effort matching continues.
 - Invalid policies and malformed route manifests produce machine-readable errors or findings.
 - Literal and regex rules can be scoped to artifact kinds.
 - Regex rules with obvious nested quantifiers are rejected.

@@ -1,6 +1,6 @@
 {
   "name": "@tovellan/surfaceguard",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Policy-driven scanner for public web build artifacts",
   "type": "module",
   "license": "Apache-2.0",
@@ -70,8 +70,10 @@
   },
   "keywords": [
     "artifact-security",
+    "astro",
     "nextjs",
     "sarif",
-    "security-scanner"
+    "security-scanner",
+    "vite"
   ]
 }

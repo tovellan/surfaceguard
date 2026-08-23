@@ -24,7 +24,21 @@ const result: ScanResult = {
       location: { line: 2, column: 4, offset: 12 },
     },
   ],
-  statistics: { filesVisited: 1, filesScanned: 1, bytesVisited: 100, routesFound: 0 },
+  statistics: {
+    filesVisited: 1,
+    filesScanned: 1,
+    bytesVisited: 100,
+    routesFound: 0,
+    findingsTruncated: false,
+  },
+  completeness: {
+    textInspection: 'complete',
+    findingDetails: 'complete',
+    findingLimit: 1_000,
+    retainedFindings: 1,
+    observedFindingsAtLeast: 1,
+    unsupportedTextArtifacts: 0,
+  },
   failed: true,
 };
 
@@ -40,13 +54,38 @@ describe('reporters', () => {
     );
   });
 
+  it('reports finding-detail and text-inspection completeness independently', () => {
+    const incomplete: ScanResult = {
+      ...result,
+      statistics: { ...result.statistics, findingsTruncated: true },
+      completeness: {
+        ...result.completeness,
+        textInspection: 'incomplete',
+        findingDetails: 'truncated',
+        observedFindingsAtLeast: 3,
+        unsupportedTextArtifacts: 1,
+      },
+    };
+    const markdown = renderMarkdown(incomplete);
+    expect(markdown).toContain('text inspection is incomplete');
+    expect(markdown).toContain('at least 3 finding(s) were observed');
+  });
+
   it('emits GitHub-compatible SARIF with stable fingerprints', () => {
     const sarif = toSarif(result) as {
-      runs: { results: Record<string, unknown>[] }[];
+      runs: {
+        properties: Record<string, unknown>;
+        results: Record<string, unknown>[];
+      }[];
     };
     expect(sarif.runs[0]?.results[0]).toMatchObject({
       ruleId: 'sample-rule',
       level: 'error',
+    });
+    expect(sarif.runs[0]?.properties).toMatchObject({
+      textInspection: 'complete',
+      findingDetails: 'complete',
+      retainedFindings: 1,
     });
     expect(renderSarif(result)).toBe(renderSarif(result));
   });

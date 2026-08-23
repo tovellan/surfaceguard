@@ -17,11 +17,17 @@ Reports are sensitive outputs. Exact evidence is necessary for remediation, but 
 - The root must be a real directory.
 - Nested symlinks are reported and never followed.
 - Containment uses resolved absolute paths and rejects escapes.
-- File traversal is sorted and bounded by file and byte counts.
-- Reads are streamed and capped per file.
+- File traversal is sorted and bounded by entry, directory, depth, file, and byte counts.
+- Recognized files are opened without following the final path component, then their
+  discovered identity, size, and timestamps are verified before and after bounded reads.
+- Manifest traversal, route evidence, and sitemap entries have cumulative ceilings.
 - URL decoding stops after a configured number of passes.
 - Malformed manifests become findings.
-- Binary-looking content is not interpreted as text.
+- Recognized text artifacts accept valid UTF-8 or BOM-tagged UTF-16LE/BE. Invalid byte
+  sequences, control bytes, unsupported BOMs, and detectable unsupported declarations
+  produce `SG1003`, mark inspection incomplete, and still receive best-effort policy
+  matching.
+- Unknown binary artifact kinds are not interpreted as text.
 - The library performs no network requests.
 
 ## Out of scope and limitations
@@ -31,7 +37,10 @@ Reports are sensitive outputs. Exact evidence is necessary for remediation, but 
 - It does not inspect application source code.
 - It expands gzip sitemaps under strict output limits. It does not expand other archives or compressed assets.
 - It does not execute JavaScript or recover dynamically assembled strings.
-- It can miss custom, encrypted, unsupported compressed, or novel encodings.
+- It cannot reliably match content inside encrypted, unsupported compressed, custom, or
+  novel encodings. An undeclared ASCII-compatible encoding can be indistinguishable from
+  valid UTF-8 bytes. Use UTF-8 or BOM-tagged UTF-16 and keep explicit document charset
+  declarations; detectable unsupported declarations fail closed.
 - It cannot determine whether arbitrary text is private without an explicit policy.
 - A clean scan is not a general security assessment.
 

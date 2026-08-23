@@ -22,17 +22,31 @@ var SurfaceGuardError = class extends Error {
     };
   }
 };
+function throwIfAborted(signal) {
+  if (signal?.aborted) {
+    throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
+  }
+}
+function rethrowOperationalError(error) {
+  if (error instanceof SurfaceGuardError) throw error;
+}
 
 // src/policy.ts
 var import_promises = require("fs/promises");
 var import_node_path = require("path");
 
 // src/constants.ts
-var VERSION = "0.4.0";
+var VERSION = "0.5.0";
 var DEFAULT_LIMITS = Object.freeze({
+  maxEntries: 1e5,
+  maxDirectories: 1e4,
+  maxDepth: 64,
   maxFiles: 5e4,
   maxFileBytes: 16 * 1024 * 1024,
   maxTotalBytes: 512 * 1024 * 1024,
+  maxRoutes: 5e4,
+  maxManifestEntries: 1e5,
+  maxSitemapEntries: 5e4,
   maxFindings: 1e3,
   maxDecodePasses: 3,
   maxPatternLength: 1024
@@ -40,7 +54,7 @@ var DEFAULT_LIMITS = Object.freeze({
 
 // src/policy.ts
 var SEVERITIES = /* @__PURE__ */ new Set(["error", "warning", "note"]);
-var ADAPTERS = /* @__PURE__ */ new Set(["auto", "generic", "nextjs", "vite"]);
+var ADAPTERS = /* @__PURE__ */ new Set(["auto", "astro", "generic", "nextjs", "vite"]);
 var SCOPES = /* @__PURE__ */ new Set([
   "all",
   "route-manifest",
@@ -209,7 +223,7 @@ function validatePolicy(value) {
   if (root.adapter !== void 0 && (typeof root.adapter !== "string" || !ADAPTERS.has(root.adapter))) {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
-      "adapter must be auto, generic, nextjs, or vite",
+      "adapter must be auto, astro, generic, nextjs, or vite",
       {
         path: "$.adapter"
       }
@@ -336,6 +350,18 @@ function renderMarkdown(result) {
     `Scanned ${result.statistics.filesScanned} text artifacts (${result.statistics.bytesVisited} bytes) and discovered ${result.statistics.routesFound} routes.`,
     ""
   ];
+  if (result.completeness.textInspection === "incomplete") {
+    lines.push(
+      `${result.completeness.unsupportedTextArtifacts} text artifact(s) used an unsupported or ambiguous encoding. Best-effort matching continued, but text inspection is incomplete.`,
+      ""
+    );
+  }
+  if (result.completeness.findingDetails === "truncated") {
+    lines.push(
+      `Finding details were truncated at ${result.completeness.findingLimit} retained item(s); at least ${result.completeness.observedFindingsAtLeast} finding(s) were observed.`,
+      ""
+    );
+  }
   if (result.findings.length === 0) {
     lines.push("No findings.", "");
     return `${lines.join("\n")}
@@ -371,6 +397,14 @@ function toSarif(result) {
     version: "2.1.0",
     runs: [
       {
+        properties: {
+          textInspection: result.completeness.textInspection,
+          findingDetails: result.completeness.findingDetails,
+          findingLimit: result.completeness.findingLimit,
+          retainedFindings: result.completeness.retainedFindings,
+          observedFindingsAtLeast: result.completeness.observedFindingsAtLeast,
+          unsupportedTextArtifacts: result.completeness.unsupportedTextArtifacts
+        },
         tool: {
           driver: {
             name: "SurfaceGuard",
@@ -413,10 +447,89 @@ function renderSarif(result) {
 }
 
 // src/scan.ts
-var import_node_path6 = require("path");
+var import_node_path7 = require("path");
+
+// src/adapters/astro.ts
+var import_node_path3 = require("path");
 
 // src/adapters/generic.ts
 var import_node_path2 = require("path");
+
+// src/adapters/limits.ts
+var AdapterBudget = class {
+  constructor(context) {
+    this.context = context;
+  }
+  context;
+  manifestEntries = 0;
+  checkSignal() {
+    throwIfAborted(this.context.signal);
+  }
+  inspectManifest(value, artifactPath) {
+    const pending = [{ value, depth: 0 }];
+    while (pending.length > 0) {
+      this.checkSignal();
+      const current = pending.pop();
+      if (!current) continue;
+      if (Array.isArray(current.value)) {
+        for (const child of current.value) {
+          this.visitManifestEntry(artifactPath);
+          this.checkManifestDepth(current.depth + 1, artifactPath);
+          pending.push({ value: child, depth: current.depth + 1 });
+        }
+      } else if (current.value && typeof current.value === "object") {
+        const record2 = current.value;
+        for (const key in record2) {
+          if (!Object.hasOwn(record2, key)) continue;
+          this.visitManifestEntry(artifactPath);
+          this.checkManifestDepth(current.depth + 1, artifactPath);
+          pending.push({ value: record2[key], depth: current.depth + 1 });
+        }
+      }
+    }
+  }
+  addRoute(routes, evidence) {
+    this.checkSignal();
+    if (routes.length + 1 > this.context.limits.maxRoutes) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Route evidence count exceeds maxRoutes",
+        {
+          artifactPath: evidence.artifactPath,
+          limit: this.context.limits.maxRoutes,
+          observed: routes.length + 1
+        }
+      );
+    }
+    routes.push(evidence);
+  }
+  visitManifestEntry(artifactPath) {
+    this.checkSignal();
+    this.manifestEntries += 1;
+    if (this.manifestEntries > this.context.limits.maxManifestEntries) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Manifest entry count exceeds maxManifestEntries",
+        {
+          artifactPath,
+          limit: this.context.limits.maxManifestEntries,
+          observed: this.manifestEntries
+        }
+      );
+    }
+  }
+  checkManifestDepth(depth, artifactPath) {
+    if (depth > this.context.limits.maxDepth) {
+      throw new SurfaceGuardError("SG_RESOURCE_LIMIT", "Manifest depth exceeds maxDepth", {
+        artifactPath,
+        limit: this.context.limits.maxDepth,
+        observed: depth
+      });
+    }
+  }
+};
+
+// src/adapters/generic.ts
 var ROUTE_KEYS = /* @__PURE__ */ new Set(["page", "path", "pathname", "route"]);
 var SITEMAP_FILENAME = /^sitemap(?:(?:[_-]?index)|(?:[_-]?\d+)|(?:-[^/]*))?\.xml(?:\.gz)?$/u;
 function classifyGeneric(relativePath) {
@@ -445,22 +558,46 @@ function classifyGeneric(relativePath) {
   }
   return "unknown";
 }
-function walkRoutes(value, artifactPath, pointer, routes, key) {
-  if (typeof value === "string") {
-    if (value.startsWith("/") && (key === void 0 || ROUTE_KEYS.has(key))) {
-      routes.push({ route: value, artifactPath, pointer });
+function walkRoutes(value, artifactPath, routes, budget) {
+  const pending = [
+    { value, pointer: "" }
+  ];
+  while (pending.length > 0) {
+    budget.checkSignal();
+    const current = pending.pop();
+    if (!current) continue;
+    if (typeof current.value === "string") {
+      if (current.value.startsWith("/") && (current.key === void 0 || ROUTE_KEYS.has(current.key))) {
+        budget.addRoute(routes, {
+          route: current.value,
+          artifactPath,
+          pointer: current.pointer
+        });
+      }
+      continue;
     }
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach(
-      (item, index) => walkRoutes(item, artifactPath, `${pointer}/${index}`, routes, key)
-    );
-    return;
-  }
-  if (!value || typeof value !== "object") return;
-  for (const [childKey, child] of Object.entries(value)) {
-    walkRoutes(child, artifactPath, `${pointer}/${childKey}`, routes, childKey);
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          value: current.value[index],
+          pointer: `${current.pointer}/${index}`,
+          ...current.key === void 0 ? {} : { key: current.key }
+        });
+      }
+      continue;
+    }
+    if (!current.value || typeof current.value !== "object") continue;
+    const record2 = current.value;
+    const keys = Object.keys(record2);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const childKey = keys[index];
+      if (childKey === void 0) continue;
+      pending.push({
+        value: record2[childKey],
+        pointer: `${current.pointer}/${childKey}`,
+        key: childKey
+      });
+    }
   }
 }
 var genericAdapter = {
@@ -470,13 +607,16 @@ var genericAdapter = {
   async collectRoutes(context) {
     const routes = [];
     const findings = [];
+    const budget = new AdapterBudget(context);
     for (const file of context.files.filter(
       (candidate) => candidate.kind === "route-manifest"
     )) {
       try {
         const value = JSON.parse(await context.readText(file));
-        walkRoutes(value, file.relativePath, "", routes);
+        budget.inspectManifest(value, file.relativePath);
+        walkRoutes(value, file.relativePath, routes, budget);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: "SG1004",
           severity: "error",
@@ -491,8 +631,61 @@ var genericAdapter = {
   }
 };
 
+// src/adapters/artifact-path.ts
+function encodeArtifactPath(relativePath) {
+  return relativePath.split("/").map(encodeURIComponent).join("/");
+}
+
+// src/adapters/astro.ts
+var ASTRO_ASSET_DIRECTORY = "_astro/";
+function isHtml(relativePath) {
+  return (0, import_node_path3.extname)(relativePath.toLowerCase()) === ".html";
+}
+function routeForHtml(relativePath) {
+  if (relativePath === "index.html") return "/";
+  if (relativePath.endsWith("/index.html")) {
+    return `/${encodeArtifactPath(relativePath.slice(0, -"index.html".length))}`;
+  }
+  return `/${encodeArtifactPath(relativePath)}`;
+}
+var astroAdapter = {
+  name: "astro",
+  detect(files) {
+    const hasDefaultAssets = files.some(
+      (file) => file.relativePath.startsWith(ASTRO_ASSET_DIRECTORY)
+    );
+    const hasHtml = files.some((file) => isHtml(file.relativePath));
+    return hasDefaultAssets && hasHtml ? files.length * 16 + 1 : 0;
+  },
+  classify(relativePath) {
+    const generic = classifyGeneric(relativePath);
+    if (generic === "source-map" || generic === "server-bundle") return generic;
+    if ([".js", ".cjs", ".mjs"].includes((0, import_node_path3.extname)(relativePath.toLowerCase()))) {
+      return "client-chunk";
+    }
+    return generic;
+  },
+  collectRoutes(context) {
+    return Promise.resolve().then(() => {
+      const routes = [];
+      const budget = new AdapterBudget(context);
+      for (const file of context.files.filter(
+        (candidate) => isHtml(candidate.relativePath)
+      )) {
+        budget.addRoute(routes, {
+          route: routeForHtml(file.relativePath),
+          artifactPath: file.relativePath,
+          pointer: "/",
+          routeKind: "artifact-path"
+        });
+      }
+      return { routes, findings: [] };
+    });
+  }
+};
+
 // src/adapters/nextjs.ts
-var import_node_path3 = require("path");
+var import_node_path4 = require("path");
 var NEXT_MANIFESTS = /* @__PURE__ */ new Set([
   "app-paths-manifest.json",
   "build-manifest.json",
@@ -500,14 +693,18 @@ var NEXT_MANIFESTS = /* @__PURE__ */ new Set([
   "prerender-manifest.json",
   "routes-manifest.json"
 ]);
-function addRoute(routes, seen, route, file, pointer, normalize = (value) => value) {
+function addRoute(routes, seen, route, file, pointer, budget, normalize = (value) => value) {
   if (typeof route !== "string" || !route.startsWith("/")) return;
   const normalized = normalize(route);
   if (!normalized) return;
   const key = `${normalized}\0${file.relativePath}\0${pointer}`;
   if (seen.has(key)) return;
   seen.add(key);
-  routes.push({ route: normalized, artifactPath: file.relativePath, pointer });
+  budget.addRoute(routes, {
+    route: normalized,
+    artifactPath: file.relativePath,
+    pointer
+  });
 }
 function normalizeAppPath(route) {
   const segments = route.split("/").filter(Boolean);
@@ -533,25 +730,27 @@ function normalizeAppPath(route) {
 function objectValue(value) {
   return value && typeof value === "object" && !Array.isArray(value) ? value : void 0;
 }
-function collectNextRoutes(value, file, routes) {
+function collectNextRoutes(value, file, routes, budget) {
   const root = objectValue(value);
   if (!root) throw new TypeError("Manifest root must be an object");
   const seen = /* @__PURE__ */ new Set();
-  const name = (0, import_node_path3.basename)(file.relativePath);
+  const name = (0, import_node_path4.basename)(file.relativePath);
   if (name === "pages-manifest.json") {
-    Object.keys(root).forEach((route) => addRoute(routes, seen, route, file, `/${route}`));
+    Object.keys(root).forEach(
+      (route) => addRoute(routes, seen, route, file, `/${route}`, budget)
+    );
     return;
   }
   if (name === "app-paths-manifest.json") {
     Object.keys(root).forEach(
-      (route) => addRoute(routes, seen, route, file, `/${route}`, normalizeAppPath)
+      (route) => addRoute(routes, seen, route, file, `/${route}`, budget, normalizeAppPath)
     );
     return;
   }
   if (name === "build-manifest.json") {
     const pages = objectValue(root.pages);
     Object.keys(pages ?? {}).forEach(
-      (route) => addRoute(routes, seen, route, file, `/pages/${route}`)
+      (route) => addRoute(routes, seen, route, file, `/pages/${route}`, budget)
     );
     return;
   }
@@ -559,7 +758,7 @@ function collectNextRoutes(value, file, routes) {
     for (const section of ["routes", "dynamicRoutes"]) {
       const entries = objectValue(root[section]);
       Object.keys(entries ?? {}).forEach(
-        (route) => addRoute(routes, seen, route, file, `/${section}/${route}`)
+        (route) => addRoute(routes, seen, route, file, `/${section}/${route}`, budget)
       );
     }
     return;
@@ -581,7 +780,8 @@ function collectNextRoutes(value, file, routes) {
             seen,
             candidate?.page ?? candidate?.source ?? candidate?.pathname,
             file,
-            `/${section}/${index}`
+            `/${section}/${index}`,
+            budget
           );
         });
       } else if (section === "rewrites") {
@@ -590,7 +790,14 @@ function collectNextRoutes(value, file, routes) {
           if (!Array.isArray(groupEntries)) continue;
           groupEntries.forEach((entry, index) => {
             const candidate = objectValue(entry);
-            addRoute(routes, seen, candidate?.source, file, `/rewrites/${group}/${index}`);
+            addRoute(
+              routes,
+              seen,
+              candidate?.source,
+              file,
+              `/rewrites/${group}/${index}`,
+              budget
+            );
           });
         }
       }
@@ -601,7 +808,7 @@ var nextjsAdapter = {
   name: "nextjs",
   detect(files) {
     return files.reduce((score, file) => {
-      const name = (0, import_node_path3.basename)(file.relativePath);
+      const name = (0, import_node_path4.basename)(file.relativePath);
       if (NEXT_MANIFESTS.has(name)) return score + 10;
       if (file.relativePath.includes("static/chunks/")) return score + 2;
       if (file.relativePath.includes("server/")) return score + 1;
@@ -609,23 +816,23 @@ var nextjsAdapter = {
     }, 0);
   },
   classify(relativePath) {
-    const name = (0, import_node_path3.basename)(relativePath);
+    const name = (0, import_node_path4.basename)(relativePath);
     if (NEXT_MANIFESTS.has(name)) return "route-manifest";
     return classifyGeneric(relativePath);
   },
   async collectRoutes(context) {
     const routes = [];
     const findings = [];
+    const budget = new AdapterBudget(context);
     for (const file of context.files.filter(
-      (candidate) => candidate.kind === "route-manifest" && NEXT_MANIFESTS.has((0, import_node_path3.basename)(candidate.relativePath))
+      (candidate) => candidate.kind === "route-manifest" && NEXT_MANIFESTS.has((0, import_node_path4.basename)(candidate.relativePath))
     )) {
       try {
-        collectNextRoutes(
-          JSON.parse(await context.readText(file)),
-          file,
-          routes
-        );
+        const value = JSON.parse(await context.readText(file));
+        budget.inspectManifest(value, file.relativePath);
+        collectNextRoutes(value, file, routes, budget);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: "SG1004",
           severity: "error",
@@ -641,13 +848,13 @@ var nextjsAdapter = {
 };
 
 // src/adapters/vite.ts
-var import_node_path4 = require("path");
+var import_node_path5 = require("path");
 var VITE_MANIFEST = ".vite/manifest.json";
-function isHtml(relativePath) {
-  return (0, import_node_path4.extname)(relativePath.toLowerCase()) === ".html";
+function isHtml2(relativePath) {
+  return (0, import_node_path5.extname)(relativePath.toLowerCase()) === ".html";
 }
-function routeForHtml(relativePath) {
-  return relativePath === "index.html" ? "/" : `/${relativePath}`;
+function routeForHtml2(relativePath) {
+  return relativePath === "index.html" ? "/" : `/${encodeArtifactPath(relativePath)}`;
 }
 function validateManifest(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -668,27 +875,37 @@ var viteAdapter = {
   detect(files) {
     return files.reduce((score, file) => {
       if (file.relativePath === VITE_MANIFEST) return score + 20;
-      if (isHtml(file.relativePath)) return score + 3;
+      if (isHtml2(file.relativePath)) return score + 3;
       if (file.relativePath.startsWith("assets/")) return score + 1;
       return score;
     }, 0);
   },
   classify(relativePath) {
-    if (relativePath === VITE_MANIFEST || isHtml(relativePath)) return "metadata";
+    if (relativePath === VITE_MANIFEST || isHtml2(relativePath)) return "metadata";
     return classifyGeneric(relativePath);
   },
   async collectRoutes(context) {
-    const routes = context.files.filter((file) => isHtml(file.relativePath)).map((file) => ({
-      route: routeForHtml(file.relativePath),
-      artifactPath: file.relativePath,
-      pointer: "/"
-    }));
+    const routes = [];
+    const budget = new AdapterBudget(context);
+    for (const file of context.files.filter(
+      (candidate) => isHtml2(candidate.relativePath)
+    )) {
+      budget.addRoute(routes, {
+        route: routeForHtml2(file.relativePath),
+        artifactPath: file.relativePath,
+        pointer: "/",
+        routeKind: "artifact-path"
+      });
+    }
     const findings = [];
     const manifest = context.files.find((file) => file.relativePath === VITE_MANIFEST);
     if (manifest) {
       try {
-        validateManifest(JSON.parse(await context.readText(manifest)));
+        const value = JSON.parse(await context.readText(manifest));
+        budget.inspectManifest(value, manifest.relativePath);
+        validateManifest(value);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: "SG1004",
           severity: "error",
@@ -706,6 +923,7 @@ var viteAdapter = {
 // src/adapters/index.ts
 var adapters = [
   nextjsAdapter,
+  astroAdapter,
   viteAdapter,
   genericAdapter
 ];
@@ -756,41 +974,121 @@ function decodeHexEscapes(input2) {
   }
   return changed ? { text: output, spans, transform: `${input2.transform}+js-hex` } : void 0;
 }
+function hexNibble(code) {
+  if (code >= 48 && code <= 57) return code - 48;
+  const folded = code | 32;
+  return folded >= 97 && folded <= 102 ? folded - 87 : -1;
+}
+function isContinuation(byte) {
+  return byte >= 128 && byte <= 191;
+}
+function isValidUtf8Scalar(bytes, start, end) {
+  const length = end - start;
+  const lead = bytes[start] ?? 0;
+  if (length === 2) {
+    return lead >= 194 && lead <= 223 && isContinuation(bytes[start + 1] ?? 0);
+  }
+  if (length === 3 && isContinuation(bytes[start + 2] ?? 0)) {
+    const second = bytes[start + 1] ?? 0;
+    return lead === 224 && second >= 160 && second <= 191 || lead >= 225 && lead <= 236 && isContinuation(second) || lead === 237 && second >= 128 && second <= 159 || lead >= 238 && lead <= 239 && isContinuation(second);
+  }
+  if (length === 4 && isContinuation(bytes[start + 2] ?? 0) && isContinuation(bytes[start + 3] ?? 0)) {
+    const second = bytes[start + 1] ?? 0;
+    return lead === 240 && second >= 144 && second <= 191 || lead >= 241 && lead <= 243 && isContinuation(second) || lead === 244 && second >= 128 && second <= 143;
+  }
+  return false;
+}
+function utf8ScalarWidth(bytes, start) {
+  const lead = bytes[start] ?? 0;
+  if (lead <= 127) return 1;
+  for (const width of [2, 3, 4]) {
+    if (start + width <= bytes.length && isValidUtf8Scalar(bytes, start, start + width)) {
+      return width;
+    }
+  }
+  return 0;
+}
+function utf8CodePoint(bytes, start, width) {
+  const first = bytes[start] ?? 0;
+  if (width === 1) return first;
+  if (width === 2) return (first & 31) << 6 | (bytes[start + 1] ?? 0) & 63;
+  if (width === 3) {
+    return (first & 15) << 12 | ((bytes[start + 1] ?? 0) & 63) << 6 | (bytes[start + 2] ?? 0) & 63;
+  }
+  return (first & 7) << 18 | ((bytes[start + 1] ?? 0) & 63) << 12 | ((bytes[start + 2] ?? 0) & 63) << 6 | (bytes[start + 3] ?? 0) & 63;
+}
 function decodePercent(input2) {
   if (!/%[0-9a-f]{2}/iu.test(input2.text)) return void 0;
-  let output = "";
+  const output = [];
   const spans = [];
   let changed = false;
-  for (let index = 0; index < input2.text.length; index += 1) {
-    const match = input2.text[index] === "%" ? /^(?:%[0-9a-f]{2})+/iu.exec(input2.text.slice(index)) : null;
-    if (!match) {
-      output += input2.text[index] ?? "";
+  for (let index = 0; index < input2.text.length; ) {
+    const first = hexNibble(input2.text.charCodeAt(index + 1));
+    const second = hexNibble(input2.text.charCodeAt(index + 2));
+    if (input2.text[index] !== "%" || first < 0 || second < 0) {
+      output.push(input2.text[index] ?? "");
       const span = sourceSpanAt(input2, index);
       if (span) spans.push(span);
+      index += 1;
       continue;
     }
-    const bytes = match[0].split("%").slice(1).map((value) => Number.parseInt(value, 16));
-    let decoded;
-    try {
-      decoded = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
-    } catch {
-      output += input2.text[index] ?? "";
-      const span = sourceSpanAt(input2, index);
-      if (span) spans.push(span);
-      continue;
+    const runStart = index;
+    while (input2.text[index] === "%" && hexNibble(input2.text.charCodeAt(index + 1)) >= 0 && hexNibble(input2.text.charCodeAt(index + 2)) >= 0) {
+      index += 3;
     }
-    const first = sourceSpanAt(input2, index);
-    const last = sourceSpanAt(input2, index + match[0].length - 1);
-    if (!first || !last) continue;
-    for (const character of decoded) {
-      output += character;
-      spans.push({ start: first.start, end: last.end });
-      if (character.length === 2) spans.push({ start: first.start, end: last.end });
+    const runEnd = index;
+    const bytes = new Uint8Array((runEnd - runStart) / 3);
+    for (let offset = 0; offset < bytes.length; offset += 1) {
+      const raw = runStart + offset * 3;
+      bytes[offset] = hexNibble(input2.text.charCodeAt(raw + 1)) << 4 | hexNibble(input2.text.charCodeAt(raw + 2));
     }
-    index += match[0].length - 1;
-    changed = true;
+    for (let byteIndex = 0; byteIndex < bytes.length; ) {
+      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
+      if (firstWidth === 0) {
+        const rawStart2 = runStart + byteIndex * 3;
+        for (let raw = rawStart2; raw < rawStart2 + 3; raw += 1) {
+          output.push(input2.text[raw] ?? "");
+          const span = sourceSpanAt(input2, raw);
+          if (span) spans.push(span);
+        }
+        byteIndex += 1;
+        continue;
+      }
+      const segmentStart = byteIndex;
+      byteIndex += firstWidth;
+      while (byteIndex < bytes.length) {
+        const width = utf8ScalarWidth(bytes, byteIndex);
+        if (width === 0) break;
+        byteIndex += width;
+      }
+      const segmentEnd = byteIndex;
+      const rawStart = runStart + segmentStart * 3;
+      const rawEnd = runStart + segmentEnd * 3;
+      const decodedFirst = sourceSpanAt(input2, rawStart);
+      const decodedLast = sourceSpanAt(input2, rawEnd - 1);
+      if (!decodedFirst || !decodedLast) continue;
+      let scalar = segmentStart;
+      let firstScalar = true;
+      while (scalar < segmentEnd) {
+        const width = utf8ScalarWidth(bytes, scalar);
+        const codePoint = utf8CodePoint(bytes, scalar, width);
+        scalar += width;
+        if (firstScalar && codePoint === 65279) {
+          firstScalar = false;
+          continue;
+        }
+        firstScalar = false;
+        const decoded = String.fromCodePoint(codePoint);
+        output.push(decoded);
+        spans.push({ start: decodedFirst.start, end: decodedLast.end });
+        if (decoded.length === 2) {
+          spans.push({ start: decodedFirst.start, end: decodedLast.end });
+        }
+      }
+      changed = true;
+    }
   }
-  return changed ? { text: output, spans, transform: `${input2.transform}+percent` } : void 0;
+  return changed ? { text: output.join(""), spans, transform: `${input2.transform}+percent` } : void 0;
 }
 function variantsForText(text, maxPasses, materializeIdentitySpans) {
   const original = {
@@ -823,36 +1121,77 @@ function rawSpanForMatch(variant, start, length) {
   const last = sourceSpanAt(variant, Math.max(start, start + length - 1));
   return first && last ? { start: first.start, end: last.end } : void 0;
 }
+function decodePercentText(text) {
+  if (!/%[0-9a-f]{2}/iu.test(text)) return void 0;
+  const output = [];
+  let changed = false;
+  for (let index = 0; index < text.length; ) {
+    if (text[index] !== "%" || hexNibble(text.charCodeAt(index + 1)) < 0 || hexNibble(text.charCodeAt(index + 2)) < 0) {
+      output.push(text[index] ?? "");
+      index += 1;
+      continue;
+    }
+    const runStart = index;
+    while (text[index] === "%" && hexNibble(text.charCodeAt(index + 1)) >= 0 && hexNibble(text.charCodeAt(index + 2)) >= 0) {
+      index += 3;
+    }
+    const bytes = new Uint8Array((index - runStart) / 3);
+    for (let offset = 0; offset < bytes.length; offset += 1) {
+      const raw = runStart + offset * 3;
+      bytes[offset] = hexNibble(text.charCodeAt(raw + 1)) << 4 | hexNibble(text.charCodeAt(raw + 2));
+    }
+    for (let byteIndex = 0; byteIndex < bytes.length; ) {
+      const firstWidth = utf8ScalarWidth(bytes, byteIndex);
+      if (firstWidth === 0) {
+        const raw = runStart + byteIndex * 3;
+        output.push(text.slice(raw, raw + 3));
+        byteIndex += 1;
+        continue;
+      }
+      let firstScalar = true;
+      while (byteIndex < bytes.length) {
+        const width = utf8ScalarWidth(bytes, byteIndex);
+        if (width === 0) break;
+        const codePoint = utf8CodePoint(bytes, byteIndex, width);
+        byteIndex += width;
+        if (firstScalar && codePoint === 65279) {
+          firstScalar = false;
+          continue;
+        }
+        firstScalar = false;
+        output.push(String.fromCodePoint(codePoint));
+      }
+      changed = true;
+    }
+  }
+  return changed ? output.join("") : void 0;
+}
 function repeatedlyDecodeUrl(value, maxPasses = 3) {
   let current = value;
   for (let pass = 0; pass < maxPasses; pass += 1) {
-    try {
-      const decoded = decodeURIComponent(current);
-      if (decoded === current) break;
-      current = decoded;
-    } catch {
-      break;
-    }
+    const decoded = decodePercentText(current);
+    if (!decoded || decoded === current) break;
+    current = decoded;
   }
   return current;
 }
 function canonicalizeUrl(value, maxPasses = 3) {
-  const decoded = repeatedlyDecodeUrl(value.trim(), maxPasses).replaceAll("\\", "/");
-  const absolute = /^[a-z][a-z\d+.-]*:/iu.test(decoded);
-  const url = new URL(decoded, "https://surfaceguard.invalid");
+  const input2 = value.trim().replaceAll("\\", "/");
+  const absolute = /^[a-z][a-z\d+.-]*:/iu.test(input2);
+  const url = new URL(input2, "https://surfaceguard.invalid");
+  url.pathname = repeatedlyDecodeUrl(url.pathname, maxPasses).replaceAll("\\", "/").replace(/\/{2,}/gu, "/");
   url.hash = "";
   url.hostname = url.hostname.toLowerCase();
   if (url.protocol === "https:" && url.port === "443" || url.protocol === "http:" && url.port === "80") {
     url.port = "";
   }
-  url.pathname = url.pathname.replace(/\/{2,}/gu, "/");
   return absolute ? url.toString() : `${url.pathname}${url.search}`;
 }
 
 // src/filesystem.ts
 var import_node_fs = require("fs");
 var import_promises2 = require("fs/promises");
-var import_node_path5 = require("path");
+var import_node_path6 = require("path");
 var import_node_zlib = require("zlib");
 
 // src/glob.ts
@@ -896,18 +1235,20 @@ function matchesGlob(value, glob) {
 
 // src/filesystem.ts
 function toPosixPath(value) {
-  return value.split(import_node_path5.sep).join("/");
+  return value.split(import_node_path6.sep).join("/");
 }
 function isContained(root, candidate) {
-  const child = (0, import_node_path5.relative)(root, candidate);
-  return child === "" || !child.startsWith(`..${import_node_path5.sep}`) && child !== ".." && !(0, import_node_path5.isAbsolute)(child);
+  const child = (0, import_node_path6.relative)(root, candidate);
+  return child === "" || !child.startsWith(`..${import_node_path6.sep}`) && child !== ".." && !(0, import_node_path6.isAbsolute)(child);
 }
-async function discoverFiles(inputRoot, limits, exclude) {
-  const requestedRoot = (0, import_node_path5.resolve)(inputRoot);
+async function discoverFiles(inputRoot, limits, exclude, signal) {
+  throwIfAborted(signal);
+  const requestedRoot = (0, import_node_path6.resolve)(inputRoot);
   let rootStat;
   try {
     rootStat = await (0, import_promises2.lstat)(requestedRoot);
   } catch (error) {
+    throwIfAborted(signal);
     throw new SurfaceGuardError(
       "SG_ROOT_INVALID",
       `Artifact root does not exist: ${requestedRoot}`,
@@ -926,14 +1267,43 @@ async function discoverFiles(inputRoot, limits, exclude) {
     );
   }
   const root = await (0, import_promises2.realpath)(requestedRoot);
+  throwIfAborted(signal);
   const files = [];
   const findings = [];
+  let findingsTruncated = false;
+  let findingsObserved = 0;
   let totalBytes = 0;
-  async function visit(directory) {
+  let entriesVisited = 0;
+  let directoriesVisited = 0;
+  async function visit(directory, depth) {
+    throwIfAborted(signal);
+    if (depth > limits.maxDepth) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Artifact directory depth exceeds maxDepth",
+        {
+          artifactPath: toPosixPath((0, import_node_path6.relative)(root, directory)) || ".",
+          limit: limits.maxDepth,
+          observed: depth
+        }
+      );
+    }
+    directoriesVisited += 1;
+    if (directoriesVisited > limits.maxDirectories) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Artifact directory count exceeds maxDirectories",
+        {
+          limit: limits.maxDirectories,
+          observed: directoriesVisited
+        }
+      );
+    }
     let handle;
     try {
       handle = await (0, import_promises2.opendir)(directory);
     } catch (error) {
+      throwIfAborted(signal);
       throw new SurfaceGuardError(
         "SG_IO_ERROR",
         `Unable to read artifact directory: ${directory}`,
@@ -943,12 +1313,28 @@ async function discoverFiles(inputRoot, limits, exclude) {
       );
     }
     const entries = [];
-    for await (const entry of handle) entries.push(entry);
+    for await (const entry of handle) {
+      throwIfAborted(signal);
+      entriesVisited += 1;
+      if (entriesVisited > limits.maxEntries) {
+        throw new SurfaceGuardError(
+          "SG_RESOURCE_LIMIT",
+          "Artifact entry count exceeds maxEntries",
+          {
+            limit: limits.maxEntries,
+            observed: entriesVisited
+          }
+        );
+      }
+      entries.push(entry);
+    }
     entries.sort((left, right) => left.name.localeCompare(right.name));
     for (const entry of entries) {
-      const absolutePath = (0, import_node_path5.resolve)(directory, entry.name);
-      const relativePath = toPosixPath((0, import_node_path5.relative)(root, absolutePath));
+      throwIfAborted(signal);
+      const absolutePath = (0, import_node_path6.resolve)(directory, entry.name);
+      const relativePath = toPosixPath((0, import_node_path6.relative)(root, absolutePath));
       if (!isContained(root, absolutePath)) {
+        findingsObserved += 1;
         if (findings.length < limits.maxFindings) {
           findings.push({
             ruleId: "SG1001",
@@ -957,12 +1343,25 @@ async function discoverFiles(inputRoot, limits, exclude) {
             artifactPath: relativePath,
             message: "Artifact path escapes the scan root"
           });
-        }
+        } else findingsTruncated = true;
         continue;
       }
       if (exclude.some((pattern) => matchesGlob(relativePath, pattern))) continue;
-      const stat = await (0, import_promises2.lstat)(absolutePath);
+      let stat;
+      try {
+        stat = await (0, import_promises2.lstat)(absolutePath);
+      } catch (error) {
+        throwIfAborted(signal);
+        throw new SurfaceGuardError(
+          "SG_IO_ERROR",
+          `Unable to inspect artifact entry: ${relativePath}`,
+          {
+            cause: error instanceof Error ? error.message : String(error)
+          }
+        );
+      }
       if (stat.isSymbolicLink()) {
+        findingsObserved += 1;
         if (findings.length < limits.maxFindings) {
           findings.push({
             ruleId: "SG1002",
@@ -973,11 +1372,35 @@ async function discoverFiles(inputRoot, limits, exclude) {
             evidence: relativePath,
             help: "Copy the intended artifact into the build directory as a regular file."
           });
-        }
+        } else findingsTruncated = true;
+        continue;
+      }
+      let resolvedEntry;
+      try {
+        resolvedEntry = await (0, import_promises2.realpath)(absolutePath);
+      } catch (error) {
+        throwIfAborted(signal);
+        throw new SurfaceGuardError(
+          "SG_IO_ERROR",
+          `Unable to resolve artifact entry: ${relativePath}`,
+          { cause: error instanceof Error ? error.message : String(error) }
+        );
+      }
+      if (!isContained(root, resolvedEntry)) {
+        findingsObserved += 1;
+        if (findings.length < limits.maxFindings) {
+          findings.push({
+            ruleId: "SG1001",
+            severity: "error",
+            category: "filesystem",
+            artifactPath: relativePath,
+            message: "Artifact path resolves outside the scan root"
+          });
+        } else findingsTruncated = true;
         continue;
       }
       if (stat.isDirectory()) {
-        await visit(absolutePath);
+        await visit(resolvedEntry, depth + 1);
         continue;
       }
       if (!stat.isFile()) continue;
@@ -1013,15 +1436,147 @@ async function discoverFiles(inputRoot, limits, exclude) {
         );
       }
       files.push({
-        absolutePath,
+        absolutePath: resolvedEntry,
         relativePath,
         kind: "unknown",
-        size: stat.size
+        size: stat.size,
+        identity: {
+          device: stat.dev,
+          inode: stat.ino,
+          modifiedMilliseconds: stat.mtimeMs,
+          changedMilliseconds: stat.ctimeMs
+        }
       });
     }
   }
-  await visit(root);
-  return { root, files, findings };
+  await visit(root, 0);
+  return { root, files, findings, findingsTruncated, findingsObserved };
+}
+async function openArtifactStream(file, signal) {
+  throwIfAborted(signal);
+  if (!Number.isInteger(import_node_fs.constants.O_NOFOLLOW) || import_node_fs.constants.O_NOFOLLOW === 0) {
+    throw new SurfaceGuardError(
+      "SG_IO_ERROR",
+      "This platform cannot open artifacts without following symbolic links",
+      { artifactPath: file.relativePath }
+    );
+  }
+  let handle;
+  try {
+    handle = await (0, import_promises2.open)(
+      file.absolutePath,
+      import_node_fs.constants.O_RDONLY | import_node_fs.constants.O_NOFOLLOW
+    );
+    throwIfAborted(signal);
+    const stat = await handle.stat();
+    if (!stat.isFile()) {
+      throw new SurfaceGuardError(
+        "SG_IO_ERROR",
+        "Artifact changed to a non-regular file before it could be read",
+        { artifactPath: file.relativePath }
+      );
+    }
+    if (file.identity && (stat.dev !== file.identity.device || stat.ino !== file.identity.inode || stat.mtimeMs !== file.identity.modifiedMilliseconds || stat.ctimeMs !== file.identity.changedMilliseconds)) {
+      throw new SurfaceGuardError(
+        "SG_IO_ERROR",
+        "Artifact changed after discovery and before it could be read",
+        { artifactPath: file.relativePath }
+      );
+    }
+    if (stat.size > file.size) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Artifact grew beyond its discovered size before reading",
+        {
+          artifactPath: file.relativePath,
+          limit: file.size,
+          observed: stat.size
+        }
+      );
+    }
+    if (stat.size !== file.size) {
+      throw new SurfaceGuardError(
+        "SG_IO_ERROR",
+        "Artifact size changed after discovery and before it could be read",
+        {
+          artifactPath: file.relativePath,
+          expected: file.size,
+          observed: stat.size
+        }
+      );
+    }
+    const stream = handle.createReadStream(
+      signal ? { autoClose: false, highWaterMark: 64 * 1024, signal } : { autoClose: false, highWaterMark: 64 * 1024 }
+    );
+    return {
+      handle,
+      stream,
+      identity: {
+        device: stat.dev,
+        inode: stat.ino,
+        size: stat.size,
+        modifiedMilliseconds: stat.mtimeMs,
+        changedMilliseconds: stat.ctimeMs
+      }
+    };
+  } catch (error) {
+    if (handle) await handle.close().catch(() => void 0);
+    if (error instanceof SurfaceGuardError) throw error;
+    throwIfAborted(signal);
+    throw new SurfaceGuardError(
+      "SG_IO_ERROR",
+      `Unable to open artifact without following links: ${file.relativePath}`,
+      { cause: error instanceof Error ? error.message : String(error) }
+    );
+  }
+}
+function streamingError(error, file, operation, signal) {
+  if (error instanceof SurfaceGuardError) return error;
+  if (signal?.aborted) {
+    return new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
+  }
+  return new SurfaceGuardError(
+    "SG_IO_ERROR",
+    operation === "read" ? `Unable to read artifact: ${file.relativePath}` : `Unable to expand gzip artifact: ${file.relativePath}`,
+    { cause: error instanceof Error ? error.message : String(error) }
+  );
+}
+async function closeArtifactStream(opened, file) {
+  let verificationError;
+  try {
+    const stat = await opened.handle.stat();
+    if (stat.dev !== opened.identity.device || stat.ino !== opened.identity.inode || stat.size !== opened.identity.size || stat.mtimeMs !== opened.identity.modifiedMilliseconds || stat.ctimeMs !== opened.identity.changedMilliseconds) {
+      verificationError = new SurfaceGuardError(
+        "SG_IO_ERROR",
+        "Artifact changed while it was being read",
+        { artifactPath: file.relativePath }
+      );
+    }
+  } catch (error) {
+    verificationError = new SurfaceGuardError(
+      "SG_IO_ERROR",
+      `Unable to verify artifact after reading: ${file.relativePath}`,
+      { cause: error instanceof Error ? error.message : String(error) }
+    );
+  }
+  if (!opened.stream.readableEnded) opened.stream.destroy();
+  let closeError;
+  try {
+    await opened.handle.close();
+  } catch (error) {
+    const code = error.code;
+    if (!(opened.stream.destroyed && code === "EBADF")) {
+      closeError = new SurfaceGuardError(
+        "SG_IO_ERROR",
+        `Unable to close artifact: ${file.relativePath}`,
+        {
+          cause: error instanceof Error ? error.message : String(error)
+        }
+      );
+    }
+  }
+  if (verificationError) throw verificationError;
+  if (closeError) throw closeError;
 }
 async function readFileStreaming(file, limits, signal) {
   if (file.size > limits.maxFileBytes) {
@@ -1033,38 +1588,39 @@ async function readFileStreaming(file, limits, signal) {
   }
   const chunks = [];
   let observed = 0;
-  const stream = (0, import_node_fs.createReadStream)(file.absolutePath, { highWaterMark: 64 * 1024, signal });
+  const opened = await openArtifactStream(file, signal);
+  let operationError;
   try {
-    for await (const chunk of stream) {
+    for await (const chunk of opened.stream) {
       const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
       observed += buffer.byteLength;
-      if (observed > limits.maxFileBytes) {
-        stream.destroy();
+      if (observed > file.size || observed > limits.maxFileBytes) {
         throw new SurfaceGuardError(
           "SG_RESOURCE_LIMIT",
-          "Artifact grew beyond maxFileBytes while reading",
+          "Artifact grew beyond its discovered size while reading",
           {
             artifactPath: file.relativePath,
-            limit: limits.maxFileBytes
+            limit: Math.min(file.size, limits.maxFileBytes),
+            observed
           }
         );
       }
       chunks.push(buffer);
     }
   } catch (error) {
-    if (error instanceof SurfaceGuardError) throw error;
-    if (signal?.aborted) {
-      throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
-    }
-    throw new SurfaceGuardError(
-      "SG_IO_ERROR",
-      `Unable to read artifact: ${file.relativePath}`,
-      {
-        cause: error instanceof Error ? error.message : String(error)
-      }
-    );
+    operationError = streamingError(error, file, "read", signal);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  let closeError;
+  try {
+    await closeArtifactStream(opened, file);
+  } catch (error) {
+    closeError = error instanceof Error ? error : new SurfaceGuardError("SG_IO_ERROR", "Unable to close artifact", {
+      cause: String(error)
+    });
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
+  return decodeArtifactText(Buffer.concat(chunks), file.relativePath);
 }
 async function readGzipTextStreaming(file, maxOutputBytes, signal) {
   if (maxOutputBytes < 1) {
@@ -1079,8 +1635,27 @@ async function readGzipTextStreaming(file, maxOutputBytes, signal) {
   }
   const chunks = [];
   let outputBytes = 0;
-  const source = (0, import_node_fs.createReadStream)(file.absolutePath, { highWaterMark: 64 * 1024, signal });
+  const opened = await openArtifactStream(file, signal);
+  const source = opened.stream;
   const gunzip = (0, import_node_zlib.createGunzip)();
+  let operationError;
+  let inputBytes = 0;
+  source.on("data", (chunk) => {
+    inputBytes += Buffer.byteLength(chunk);
+    if (inputBytes > file.size) {
+      source.destroy(
+        new SurfaceGuardError(
+          "SG_RESOURCE_LIMIT",
+          "Compressed artifact grew beyond its discovered size while reading",
+          {
+            artifactPath: file.relativePath,
+            limit: file.size,
+            observed: inputBytes
+          }
+        )
+      );
+    }
+  });
   source.on("error", (error) => gunzip.destroy(error));
   source.pipe(gunzip);
   try {
@@ -1101,32 +1676,79 @@ async function readGzipTextStreaming(file, maxOutputBytes, signal) {
       chunks.push(buffer);
     }
   } catch (error) {
-    if (error instanceof SurfaceGuardError) throw error;
-    if (signal?.aborted) {
-      throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
-    }
-    throw new SurfaceGuardError(
-      "SG_IO_ERROR",
-      `Unable to expand gzip artifact: ${file.relativePath}`,
-      {
-        cause: error instanceof Error ? error.message : String(error)
-      }
-    );
-  } finally {
-    source.destroy();
-    gunzip.destroy();
+    operationError = streamingError(error, file, "expand", signal);
   }
-  return { text: Buffer.concat(chunks).toString("utf8"), outputBytes };
+  gunzip.destroy();
+  let closeError;
+  try {
+    await closeArtifactStream(opened, file);
+  } catch (error) {
+    closeError = error instanceof Error ? error : new SurfaceGuardError("SG_IO_ERROR", "Unable to close artifact", {
+      cause: String(error)
+    });
+  }
+  if (operationError) throw operationError;
+  if (closeError) throw closeError;
+  return { ...decodeArtifactText(Buffer.concat(chunks), file.relativePath), outputBytes };
+}
+function declaredEncoding(relativePath, text) {
+  const path = relativePath.toLowerCase().replace(/\.gz$/u, "");
+  const head = text.slice(0, 8192);
+  let match = null;
+  if (path.endsWith(".html") || path.endsWith(".htm")) {
+    match = /<meta\b[^>]{0,2048}\bcharset\s*=\s*["']?\s*([a-z0-9._-]+)/iu.exec(head);
+  } else if (path.endsWith(".xml") || path.endsWith(".svg")) {
+    match = /<\?xml\b[^?]{0,1024}\bencoding\s*=\s*["']\s*([^"'\s]{1,64})/iu.exec(head);
+  } else if (path.endsWith(".css")) {
+    match = /^\s*@charset\s+["']([^"']{1,64})["']/iu.exec(head);
+  }
+  return match?.[1]?.toLowerCase();
+}
+function supportsDeclaration(declared, encoding) {
+  if (encoding === "utf-8") {
+    return ["utf-8", "utf8", "us-ascii", "ascii"].includes(declared);
+  }
+  return declared === "utf-16" || declared === encoding;
+}
+function decodeArtifactText(buffer, relativePath) {
+  const utf32LittleEndian = buffer[0] === 255 && buffer[1] === 254 && buffer[2] === 0 && buffer[3] === 0;
+  const utf32BigEndian = buffer[0] === 0 && buffer[1] === 0 && buffer[2] === 254 && buffer[3] === 255;
+  if (utf32LittleEndian || utf32BigEndian) {
+    return {
+      text: new TextDecoder("utf-8").decode(buffer),
+      encoding: "unsupported",
+      valid: false,
+      issue: "unsupported-bom"
+    };
+  }
+  let encoding = "utf-8";
+  if (buffer[0] === 255 && buffer[1] === 254) encoding = "utf-16le";
+  if (buffer[0] === 254 && buffer[1] === 255) encoding = "utf-16be";
+  try {
+    const text = new TextDecoder(encoding, { fatal: true }).decode(buffer);
+    if (appearsBinary(text)) {
+      return { text, encoding, valid: false, issue: "control-heavy" };
+    }
+    const declaration = declaredEncoding(relativePath, text);
+    if (declaration && !supportsDeclaration(declaration, encoding)) {
+      return { text, encoding, valid: false, issue: "unsupported-declaration" };
+    }
+    return { text, encoding, valid: true };
+  } catch {
+    return {
+      text: new TextDecoder(encoding).decode(buffer),
+      encoding,
+      valid: false,
+      issue: "invalid-sequence"
+    };
+  }
 }
 function appearsBinary(text) {
-  const sample = text.slice(0, 8192);
-  if (sample.includes("\0")) return true;
-  let controls = 0;
-  for (const character of sample) {
+  for (const character of text) {
     const code = character.codePointAt(0) ?? 0;
-    if (code < 9 || code > 13 && code < 32) controls += 1;
+    if (code < 9 || code > 13 && code < 32) return true;
   }
-  return sample.length > 0 && controls / sample.length > 0.05;
+  return false;
 }
 
 // src/matcher.ts
@@ -1255,18 +1877,55 @@ function decodeXml(value) {
     apos: "'"
   };
   return value.replace(
-    /&(amp|lt|gt|quot|apos);/gu,
-    (_match, name) => {
-      return entities[name];
+    /&(amp|lt|gt|quot|apos|#x[0-9a-f]+|#[0-9]+);/giu,
+    (match, name) => {
+      const named = entities[name.toLowerCase()];
+      if (named !== void 0) return named;
+      const hexadecimal = name[1]?.toLowerCase() === "x";
+      const digits = name.slice(hexadecimal ? 2 : 1);
+      const codePoint = Number.parseInt(digits, hexadecimal ? 16 : 10);
+      const validXmlCharacter = codePoint === 9 || codePoint === 10 || codePoint === 13 || codePoint >= 32 && codePoint <= 55295 || codePoint >= 57344 && codePoint <= 65533 || codePoint >= 65536 && codePoint <= 1114111;
+      return validXmlCharacter ? String.fromCodePoint(codePoint) : match;
     }
   );
 }
-function parseSitemap(text, maxDecodePasses) {
+function parseSitemap(text, maxDecodePasses, options) {
   const routes = [];
-  const expression = /<loc\b[^>]*>([\s\S]*?)<\/loc>/giu;
-  let match;
-  while ((match = expression.exec(text)) !== null) {
-    const value = decodeXml(match[1]?.trim() ?? "");
+  let entriesVisited = options.entriesVisited ?? 0;
+  let cursor = 0;
+  let openLocation;
+  while (cursor < text.length) {
+    throwIfAborted(options.signal);
+    const tagStart = text.indexOf("<", cursor);
+    if (tagStart < 0) break;
+    const tagEnd = text.indexOf(">", tagStart + 1);
+    if (tagEnd < 0) break;
+    cursor = tagEnd + 1;
+    let nameStart = tagStart + 1;
+    const closing = text[nameStart] === "/";
+    if (closing) nameStart += 1;
+    if (text.slice(nameStart, nameStart + 3).toLowerCase() !== "loc") continue;
+    const boundary = text[nameStart + 3];
+    if (boundary !== ">" && boundary !== "/" && !/\s/u.test(boundary ?? "")) continue;
+    if (!closing) {
+      if (text.slice(tagStart, tagEnd).trimEnd().endsWith("/")) continue;
+      openLocation ??= tagEnd + 1;
+      continue;
+    }
+    if (openLocation === void 0) continue;
+    entriesVisited += 1;
+    if (entriesVisited > options.maxEntries) {
+      throw new SurfaceGuardError(
+        "SG_RESOURCE_LIMIT",
+        "Sitemap entry count exceeds maxSitemapEntries",
+        {
+          limit: options.maxEntries,
+          observed: entriesVisited
+        }
+      );
+    }
+    const value = decodeXml(text.slice(openLocation, tagStart).trim());
+    openLocation = void 0;
     if (!value) continue;
     try {
       const canonical = canonicalizeUrl(value, maxDecodePasses);
@@ -1276,7 +1935,7 @@ function parseSitemap(text, maxDecodePasses) {
       continue;
     }
   }
-  return routes;
+  return { routes, entriesVisited };
 }
 function parseRobots(text) {
   const rules = { disallow: [], sitemaps: [] };
@@ -1312,7 +1971,10 @@ function evaluateRoutes(routes, options, maxDecodePasses) {
   const findings = [];
   const normalized = /* @__PURE__ */ new Map();
   for (const evidence of routes) {
-    const route = normalizeRoute(evidence.route, maxDecodePasses);
+    const route = normalizeRoute(
+      evidence.route,
+      evidence.routeKind === "artifact-path" ? 0 : maxDecodePasses
+    );
     if (!normalized.has(route)) normalized.set(route, evidence);
   }
   const assertions = options.policy.routes;
@@ -1356,7 +2018,7 @@ function evaluateRoutes(routes, options, maxDecodePasses) {
   }
   return { findings, normalized };
 }
-function evaluateSitemap(policy, files, texts, routes, maxDecodePasses) {
+function evaluateSitemap(policy, files, texts, routes, maxDecodePasses, maxSitemapEntries, signal) {
   const settings = policy.sitemap;
   if (!settings || settings.mode === "off") return [];
   const findings = [];
@@ -1374,9 +2036,16 @@ function evaluateSitemap(policy, files, texts, routes, maxDecodePasses) {
   }
   if (sitemapFiles.length === 0) return findings;
   const sitemapRoutes = /* @__PURE__ */ new Map();
+  let entriesVisited = 0;
   for (const file of sitemapFiles) {
     const text = texts.get(file.relativePath) ?? "";
-    for (const route of parseSitemap(text, maxDecodePasses)) {
+    const parsed = parseSitemap(text, maxDecodePasses, {
+      maxEntries: maxSitemapEntries,
+      entriesVisited,
+      ...signal ? { signal } : {}
+    });
+    entriesVisited = parsed.entriesVisited;
+    for (const route of parsed.routes) {
       sitemapRoutes.set(normalizeRoute(route, maxDecodePasses), file.relativePath);
     }
   }
@@ -1447,10 +2116,83 @@ function sortFindings(findings) {
     (left, right) => left.artifactPath.localeCompare(right.artifactPath) || (left.location?.offset ?? -1) - (right.location?.offset ?? -1) || left.ruleId.localeCompare(right.ruleId) || (left.evidence ?? "").localeCompare(right.evidence ?? "")
   );
 }
+function encodingFinding(file) {
+  return {
+    ruleId: "SG1003",
+    severity: "error",
+    category: "filesystem",
+    artifactPath: file.relativePath,
+    message: "Text artifact uses an unsupported or ambiguous encoding",
+    help: "Encode textual public artifacts as valid UTF-8 or BOM-tagged UTF-16LE/BE."
+  };
+}
+var FindingCollector = class {
+  constructor(maximum, failOn) {
+    this.maximum = maximum;
+    this.failOn = failOn;
+  }
+  maximum;
+  failOn;
+  findings = [];
+  truncated = false;
+  failureObserved = false;
+  observedFindingsAtLeast = 0;
+  add(finding) {
+    this.observedFindingsAtLeast += 1;
+    const rank = SEVERITY_RANK[finding.severity];
+    if (rank >= SEVERITY_RANK[this.failOn]) this.failureObserved = true;
+    if (this.findings.length < this.maximum) {
+      this.findings.push(finding);
+      return;
+    }
+    this.truncated = true;
+    let lowest = this.findings.length - 1;
+    for (let index = this.findings.length - 2; index >= 0; index -= 1) {
+      if (SEVERITY_RANK[this.findings[index]?.severity ?? "error"] < SEVERITY_RANK[this.findings[lowest]?.severity ?? "error"]) {
+        lowest = index;
+      }
+    }
+    if (rank > SEVERITY_RANK[this.findings[lowest]?.severity ?? "error"]) {
+      this.findings[lowest] = finding;
+    }
+  }
+  addAll(findings) {
+    for (const finding of findings) this.add(finding);
+  }
+  observeOmitted(count, severity) {
+    if (count <= 0) return;
+    this.observedFindingsAtLeast += count;
+    this.truncated = true;
+    if (SEVERITY_RANK[severity] >= SEVERITY_RANK[this.failOn]) {
+      this.failureObserved = true;
+    }
+  }
+  matchLimit(severity) {
+    const rank = SEVERITY_RANK[severity];
+    const freeSlots = this.maximum - this.findings.length;
+    const replaceable = this.findings.filter(
+      (finding) => SEVERITY_RANK[finding.severity] < rank
+    ).length;
+    return Math.min(this.maximum + 1, Math.max(1, freeSlots + replaceable + 1));
+  }
+};
 async function scanArtifacts(input2) {
   const policy = validatePolicy(input2.policy);
   const limits = resolveLimits(policy);
-  const discovered = await discoverFiles(input2.root, limits, policy.exclude ?? []);
+  const discovered = await discoverFiles(
+    input2.root,
+    limits,
+    policy.exclude ?? [],
+    input2.signal
+  );
+  const failOn = policy.failOn ?? "error";
+  const collector = new FindingCollector(limits.maxFindings, failOn);
+  collector.addAll(discovered.findings);
+  collector.observeOmitted(
+    discovered.findingsObserved - discovered.findings.length,
+    "error"
+  );
+  if (discovered.findingsTruncated) collector.truncated = true;
   if (input2.signal?.aborted)
     throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
   const requestedAdapter = input2.adapter ?? policy.adapter ?? "auto";
@@ -1458,6 +2200,7 @@ async function scanArtifacts(input2) {
   for (const file of discovered.files)
     file.kind = adapter.classify(file.relativePath) ?? "unknown";
   const texts = /* @__PURE__ */ new Map();
+  const unsupportedTextArtifacts = /* @__PURE__ */ new Set();
   let expandedBytes = 0;
   const readText = async (file) => {
     const cached = texts.get(file.relativePath);
@@ -1472,34 +2215,44 @@ async function scanArtifacts(input2) {
       );
       text = expanded.text;
       expandedBytes += expanded.outputBytes;
+      if (!expanded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
+        unsupportedTextArtifacts.add(file.relativePath);
+        collector.add(encodingFinding(file));
+      }
     } else {
-      text = await readFileStreaming(file, limits, input2.signal);
+      const decoded = await readFileStreaming(file, limits, input2.signal);
+      text = decoded.text;
+      if (!decoded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
+        unsupportedTextArtifacts.add(file.relativePath);
+        collector.add(encodingFinding(file));
+      }
     }
-    texts.set(file.relativePath, text);
+    if (file.kind === "sitemap" || file.kind === "robots") {
+      texts.set(file.relativePath, text);
+    }
     return text;
   };
   const routeResult = await adapter.collectRoutes({
     root: discovered.root,
     files: discovered.files,
-    readText
+    readText,
+    limits,
+    ...input2.signal ? { signal: input2.signal } : {}
   });
   const evaluatedRoutes = evaluateRoutes(
     routeResult.routes,
     { ...input2, policy },
     limits.maxDecodePasses
   );
-  const findings = [
-    ...discovered.findings,
-    ...routeResult.findings,
-    ...evaluatedRoutes.findings
-  ];
+  collector.addAll(routeResult.findings);
+  collector.addAll(evaluatedRoutes.findings);
   let filesScanned = 0;
   for (const file of discovered.files) {
     if (input2.signal?.aborted)
       throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
     for (const rule of policy.forbidden?.files ?? []) {
       if (matchesGlob(file.relativePath, rule.glob)) {
-        findings.push({
+        collector.add({
           ruleId: rule.id,
           severity: rule.severity ?? "error",
           category: "file",
@@ -1511,26 +2264,37 @@ async function scanArtifacts(input2) {
       }
     }
     if (file.kind === "source-map" && policy.sourceMaps?.mode === "forbid") {
-      findings.push({
+      collector.add({
         ruleId: "SG3001",
         severity: "error",
         category: "source-map",
         artifactPath: file.relativePath,
         message: "Source map file is forbidden by policy",
-        evidence: (0, import_node_path6.basename)(file.relativePath)
+        evidence: (0, import_node_path7.basename)(file.relativePath)
       });
     }
     if (file.kind === "unknown") continue;
     const text = await readText(file);
-    if (appearsBinary(text)) continue;
     filesScanned += 1;
     if (policy.sourceMaps?.mode === "forbid") {
       const directive = /[/#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/giu;
+      const directiveLimit = collector.matchLimit("error");
+      let directivesObserved = 0;
+      let line = 1;
+      let lineStart = 0;
+      let locationCursor = 0;
       let match;
       while ((match = directive.exec(text)) !== null) {
         const inline = match[1]?.startsWith("data:") ?? false;
         if (inline && policy.sourceMaps.inline === "allow") continue;
-        findings.push({
+        let newline = text.indexOf("\n", locationCursor);
+        while (newline >= 0 && newline < match.index) {
+          line += 1;
+          lineStart = newline + 1;
+          locationCursor = newline + 1;
+          newline = text.indexOf("\n", locationCursor);
+        }
+        collector.add({
           ruleId: inline ? "SG3002" : "SG3003",
           severity: "error",
           category: "source-map",
@@ -1538,11 +2302,13 @@ async function scanArtifacts(input2) {
           message: inline ? "Inline source map is forbidden by policy" : "Source map reference is forbidden by policy",
           evidence: match[0],
           location: {
-            line: text.slice(0, match.index).split("\n").length,
-            column: match.index - text.lastIndexOf("\n", match.index - 1),
+            line,
+            column: match.index - lineStart + 1,
             offset: match.index
           }
         });
+        directivesObserved += 1;
+        if (directivesObserved >= directiveLimit) break;
       }
     }
     const groups = [
@@ -1552,30 +2318,33 @@ async function scanArtifacts(input2) {
     ];
     for (const [category, rules] of groups) {
       for (const rule of rules) {
-        findings.push(...matchPatternRule(text, file, rule, category, limits));
-        if (findings.length >= limits.maxFindings) break;
+        const severity = rule.severity ?? "error";
+        collector.addAll(
+          matchPatternRule(text, file, rule, category, {
+            ...limits,
+            maxFindings: collector.matchLimit(severity)
+          })
+        );
       }
-      if (findings.length >= limits.maxFindings) break;
     }
-    if (findings.length >= limits.maxFindings) break;
   }
   for (const file of discovered.files.filter(
     (candidate) => candidate.kind === "sitemap" || candidate.kind === "robots"
   )) {
     if (!texts.has(file.relativePath)) await readText(file);
   }
-  findings.push(
-    ...evaluateSitemap(
+  collector.addAll(
+    evaluateSitemap(
       policy,
       discovered.files,
       texts,
       evaluatedRoutes.normalized,
-      limits.maxDecodePasses
+      limits.maxDecodePasses,
+      limits.maxSitemapEntries,
+      input2.signal
     )
   );
-  if (findings.length > limits.maxFindings) findings.length = limits.maxFindings;
-  const sorted = sortFindings(findings);
-  const failOn = policy.failOn ?? "error";
+  const sorted = sortFindings(collector.findings);
   return {
     schemaVersion: 1,
     tool: { name: "surfaceguard", version: VERSION },
@@ -1586,11 +2355,18 @@ async function scanArtifacts(input2) {
       filesVisited: discovered.files.length,
       filesScanned,
       bytesVisited: discovered.files.reduce((total, file) => total + file.size, 0),
-      routesFound: evaluatedRoutes.normalized.size
+      routesFound: evaluatedRoutes.normalized.size,
+      findingsTruncated: collector.truncated
     },
-    failed: sorted.some(
-      (finding) => SEVERITY_RANK[finding.severity] >= SEVERITY_RANK[failOn]
-    )
+    completeness: {
+      textInspection: unsupportedTextArtifacts.size === 0 ? "complete" : "incomplete",
+      findingDetails: collector.truncated ? "truncated" : "complete",
+      findingLimit: limits.maxFindings,
+      retainedFindings: sorted.length,
+      observedFindingsAtLeast: collector.observedFindingsAtLeast,
+      unsupportedTextArtifacts: unsupportedTextArtifacts.size
+    },
+    failed: collector.failureObserved
   };
 }
 
@@ -1637,7 +2413,7 @@ async function run() {
   const root = input("artifact", true);
   const policyPath = input("policy", true);
   const adapterValue = input("adapter") || "auto";
-  if (adapterValue !== "auto" && adapterValue !== "generic" && adapterValue !== "nextjs" && adapterValue !== "vite") {
+  if (adapterValue !== "auto" && adapterValue !== "astro" && adapterValue !== "generic" && adapterValue !== "nextjs" && adapterValue !== "vite") {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
       `Unsupported adapter: ${adapterValue}`
@@ -1648,6 +2424,15 @@ async function run() {
   const result = await scanArtifacts({ root, policy, adapter: adapterValue });
   if (sarifPath) await (0, import_promises3.writeFile)(sarifPath, renderSarif(result), "utf8");
   await setOutput("findings", result.findings.length.toString());
+  await setOutput(
+    "findings-truncated",
+    String(result.completeness.findingDetails === "truncated")
+  );
+  await setOutput(
+    "observed-findings-at-least",
+    result.completeness.observedFindingsAtLeast.toString()
+  );
+  await setOutput("text-inspection", result.completeness.textInspection);
   await setOutput("failed", String(result.failed));
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) await (0, import_promises3.appendFile)(summaryPath, renderMarkdown(result), "utf8");
@@ -1655,7 +2440,7 @@ async function run() {
   if (result.failed) {
     throw new SurfaceGuardError(
       "SG_IO_ERROR",
-      `SurfaceGuard found ${result.findings.length} policy finding(s).`
+      `SurfaceGuard policy failed. Retained ${result.findings.length} finding detail(s); observed at least ${result.completeness.observedFindingsAtLeast}.`
     );
   }
 }

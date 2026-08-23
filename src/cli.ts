@@ -9,7 +9,7 @@ import { renderJson, renderMarkdown, renderSarif } from './reporters/index.js';
 import { scanArtifacts } from './scan.js';
 
 type Format = 'json' | 'markdown' | 'sarif';
-type Adapter = 'auto' | 'generic' | 'nextjs' | 'vite';
+type Adapter = 'auto' | 'astro' | 'generic' | 'nextjs' | 'vite';
 
 interface ParsedScan {
   root: string;
@@ -70,7 +70,7 @@ Usage:
   surfaceguard init [--output surfaceguard.policy.json]
 
 Scan options:
-  --adapter <auto|generic|nextjs|vite>  Override framework detection
+  --adapter <auto|astro|generic|nextjs|vite>  Override framework detection
   --format <json|markdown|sarif>    Report format (default: markdown)
   --output <path>                   Write report to a file instead of stdout
   --policy <path>                   Versioned SurfaceGuard policy
@@ -116,7 +116,7 @@ function parseScan(args: string[]): ParsedScan {
       index += 1;
     } else if (option === '--adapter') {
       const value = takeValue(args, index, option);
-      if (!['auto', 'generic', 'nextjs', 'vite'].includes(value)) {
+      if (!['auto', 'astro', 'generic', 'nextjs', 'vite'].includes(value)) {
         throw new SurfaceGuardError('SG_CONFIG_INVALID', `Unsupported adapter: ${value}`);
       }
       adapter = value as Adapter;

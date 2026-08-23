@@ -1,4 +1,10 @@
-export { genericAdapter, nextjsAdapter, viteAdapter, adapters } from './adapters/index.js';
+export {
+  astroAdapter,
+  genericAdapter,
+  nextjsAdapter,
+  viteAdapter,
+  adapters,
+} from './adapters/index.js';
 export { VERSION, DEFAULT_LIMITS } from './constants.js';
 export { canonicalizeUrl, decodeTextVariants, repeatedlyDecodeUrl } from './decode.js';
 export { SurfaceGuardError } from './errors.js';
@@ -15,6 +21,7 @@ export type {
   FrameworkAdapter,
   PatternRule,
   RouteEvidence,
+  ScanCompleteness,
   ScanLimits,
   ScanOptions,
   ScanResult,

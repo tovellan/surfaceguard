@@ -32,7 +32,7 @@ export interface FileRule {
 
 export interface SurfaceGuardPolicyV1 {
   schemaVersion: 1;
-  adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
+  adapter?: 'auto' | 'astro' | 'generic' | 'nextjs' | 'vite';
   failOn?: Severity;
   exclude?: string[];
   routes?: {
@@ -62,9 +62,15 @@ export interface SurfaceGuardPolicyV1 {
 export type SurfaceGuardPolicy = SurfaceGuardPolicyV1;
 
 export interface ScanLimits {
+  maxEntries: number;
+  maxDirectories: number;
+  maxDepth: number;
   maxFiles: number;
   maxFileBytes: number;
   maxTotalBytes: number;
+  maxRoutes: number;
+  maxManifestEntries: number;
+  maxSitemapEntries: number;
   maxFindings: number;
   maxDecodePasses: number;
   maxPatternLength: number;
@@ -75,12 +81,19 @@ export interface ArtifactFile {
   relativePath: string;
   kind: ArtifactKind;
   size: number;
+  identity?: {
+    device: number;
+    inode: number;
+    modifiedMilliseconds: number;
+    changedMilliseconds: number;
+  };
 }
 
 export interface RouteEvidence {
   route: string;
   artifactPath: string;
   pointer: string;
+  routeKind?: 'url' | 'artifact-path';
 }
 
 export interface FindingLocation {
@@ -116,6 +129,16 @@ export interface ScanStatistics {
   filesScanned: number;
   bytesVisited: number;
   routesFound: number;
+  findingsTruncated: boolean;
+}
+
+export interface ScanCompleteness {
+  textInspection: 'complete' | 'incomplete';
+  findingDetails: 'complete' | 'truncated';
+  findingLimit: number;
+  retainedFindings: number;
+  observedFindingsAtLeast: number;
+  unsupportedTextArtifacts: number;
 }
 
 export interface ScanResult {
@@ -128,13 +151,14 @@ export interface ScanResult {
   adapter: string;
   findings: Finding[];
   statistics: ScanStatistics;
+  completeness: ScanCompleteness;
   failed: boolean;
 }
 
 export interface ScanOptions {
   root: string;
   policy: SurfaceGuardPolicy;
-  adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
+  adapter?: 'auto' | 'astro' | 'generic' | 'nextjs' | 'vite';
   signal?: AbortSignal;
 }
 
@@ -142,6 +166,8 @@ export interface AdapterContext {
   root: string;
   files: readonly ArtifactFile[];
   readText(file: ArtifactFile): Promise<string>;
+  limits: Readonly<ScanLimits>;
+  signal?: AbortSignal;
 }
 
 export interface FrameworkAdapter {

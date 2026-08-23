@@ -1,6 +1,6 @@
 # Library API
 
-The ESM package exports the following stable version 0.1 entry points.
+The ESM package exports the following version 0.x entry points.
 
 ## Scanning
 
@@ -16,6 +16,12 @@ const result = await scanArtifacts({
 ```
 
 `adapter` and `signal` are optional. Aborts and invalid inputs throw `SurfaceGuardError`.
+`result.findings` is a bounded, severity-prioritized subset. Failure evaluation remains
+independent from retained report details. `result.completeness` reports whether text
+inspection was complete, whether finding details were truncated, the configured and
+retained counts, a lower bound on observed findings, and the number of text artifacts
+with unsupported or ambiguous encodings. `result.statistics.findingsTruncated` remains
+an equivalent convenience flag for finding-detail truncation.
 
 ## Policy
 
@@ -38,6 +44,6 @@ const result = await scanArtifacts({
 
 ## Extension points
 
-`FrameworkAdapter`, `AdapterContext`, and related artifact and finding types are exported. Adapter authors must keep classification and route collection deterministic and must use the provided bounded `readText` callback.
+`FrameworkAdapter`, `AdapterContext`, and related artifact and finding types are exported. Adapter authors must keep classification and route collection deterministic, use the provided bounded `readText` callback, observe `context.signal`, and enforce the route and manifest ceilings in `context.limits`.
 
 The version 0.1 adapter interface can change in a minor release before version 1.0. Changes will be documented in `CHANGELOG.md`.

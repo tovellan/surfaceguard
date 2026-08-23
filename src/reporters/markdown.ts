@@ -21,6 +21,18 @@ export function renderMarkdown(result: ScanResult): string {
     `Scanned ${result.statistics.filesScanned} text artifacts (${result.statistics.bytesVisited} bytes) and discovered ${result.statistics.routesFound} routes.`,
     '',
   ];
+  if (result.completeness.textInspection === 'incomplete') {
+    lines.push(
+      `${result.completeness.unsupportedTextArtifacts} text artifact(s) used an unsupported or ambiguous encoding. Best-effort matching continued, but text inspection is incomplete.`,
+      '',
+    );
+  }
+  if (result.completeness.findingDetails === 'truncated') {
+    lines.push(
+      `Finding details were truncated at ${result.completeness.findingLimit} retained item(s); at least ${result.completeness.observedFindingsAtLeast} finding(s) were observed.`,
+      '',
+    );
+  }
   if (result.findings.length === 0) {
     lines.push('No findings.', '');
     return `${lines.join('\n')}\n`;

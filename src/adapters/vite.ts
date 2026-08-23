@@ -1,6 +1,9 @@
 import { extname } from 'node:path';
 
 import { classifyGeneric } from './generic.js';
+import { encodeArtifactPath } from './artifact-path.js';
+import { AdapterBudget } from './limits.js';
+import { rethrowOperationalError } from '../errors.js';
 import type {
   AdapterContext,
   ArtifactKind,
@@ -16,7 +19,7 @@ function isHtml(relativePath: string): boolean {
 }
 
 function routeForHtml(relativePath: string): string {
-  return relativePath === 'index.html' ? '/' : `/${relativePath}`;
+  return relativePath === 'index.html' ? '/' : `/${encodeArtifactPath(relativePath)}`;
 }
 
 function validateManifest(value: unknown): void {
@@ -52,19 +55,27 @@ export const viteAdapter: FrameworkAdapter = {
     routes: RouteEvidence[];
     findings: Finding[];
   }> {
-    const routes = context.files
-      .filter((file) => isHtml(file.relativePath))
-      .map((file) => ({
+    const routes: RouteEvidence[] = [];
+    const budget = new AdapterBudget(context);
+    for (const file of context.files.filter((candidate) =>
+      isHtml(candidate.relativePath),
+    )) {
+      budget.addRoute(routes, {
         route: routeForHtml(file.relativePath),
         artifactPath: file.relativePath,
         pointer: '/',
-      }));
+        routeKind: 'artifact-path',
+      });
+    }
     const findings: Finding[] = [];
     const manifest = context.files.find((file) => file.relativePath === VITE_MANIFEST);
     if (manifest) {
       try {
-        validateManifest(JSON.parse(await context.readText(manifest)) as unknown);
+        const value = JSON.parse(await context.readText(manifest)) as unknown;
+        budget.inspectManifest(value, manifest.relativePath);
+        validateManifest(value);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: 'SG1004',
           severity: 'error',

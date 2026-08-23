@@ -18,7 +18,7 @@ interface FileRule {
 }
 interface SurfaceGuardPolicyV1 {
     schemaVersion: 1;
-    adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
+    adapter?: 'auto' | 'astro' | 'generic' | 'nextjs' | 'vite';
     failOn?: Severity;
     exclude?: string[];
     routes?: {
@@ -46,9 +46,15 @@ interface SurfaceGuardPolicyV1 {
 }
 type SurfaceGuardPolicy = SurfaceGuardPolicyV1;
 interface ScanLimits {
+    maxEntries: number;
+    maxDirectories: number;
+    maxDepth: number;
     maxFiles: number;
     maxFileBytes: number;
     maxTotalBytes: number;
+    maxRoutes: number;
+    maxManifestEntries: number;
+    maxSitemapEntries: number;
     maxFindings: number;
     maxDecodePasses: number;
     maxPatternLength: number;
@@ -58,11 +64,18 @@ interface ArtifactFile {
     relativePath: string;
     kind: ArtifactKind;
     size: number;
+    identity?: {
+        device: number;
+        inode: number;
+        modifiedMilliseconds: number;
+        changedMilliseconds: number;
+    };
 }
 interface RouteEvidence {
     route: string;
     artifactPath: string;
     pointer: string;
+    routeKind?: 'url' | 'artifact-path';
 }
 interface FindingLocation {
     line: number;
@@ -85,6 +98,15 @@ interface ScanStatistics {
     filesScanned: number;
     bytesVisited: number;
     routesFound: number;
+    findingsTruncated: boolean;
+}
+interface ScanCompleteness {
+    textInspection: 'complete' | 'incomplete';
+    findingDetails: 'complete' | 'truncated';
+    findingLimit: number;
+    retainedFindings: number;
+    observedFindingsAtLeast: number;
+    unsupportedTextArtifacts: number;
 }
 interface ScanResult {
     schemaVersion: 1;
@@ -96,18 +118,21 @@ interface ScanResult {
     adapter: string;
     findings: Finding[];
     statistics: ScanStatistics;
+    completeness: ScanCompleteness;
     failed: boolean;
 }
 interface ScanOptions {
     root: string;
     policy: SurfaceGuardPolicy;
-    adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
+    adapter?: 'auto' | 'astro' | 'generic' | 'nextjs' | 'vite';
     signal?: AbortSignal;
 }
 interface AdapterContext {
     root: string;
     files: readonly ArtifactFile[];
     readText(file: ArtifactFile): Promise<string>;
+    limits: Readonly<ScanLimits>;
+    signal?: AbortSignal;
 }
 interface FrameworkAdapter {
     readonly name: string;
@@ -119,6 +144,8 @@ interface FrameworkAdapter {
     }>;
 }
 
+declare const astroAdapter: FrameworkAdapter;
+
 declare const genericAdapter: FrameworkAdapter;
 
 declare const nextjsAdapter: FrameworkAdapter;
@@ -127,7 +154,7 @@ declare const viteAdapter: FrameworkAdapter;
 
 declare const adapters: readonly FrameworkAdapter[];
 
-declare const VERSION = "0.4.0";
+declare const VERSION = "0.5.0";
 declare const DEFAULT_LIMITS: Readonly<ScanLimits>;
 
 interface SourceSpan {
@@ -167,4 +194,4 @@ declare function renderSarif(result: ScanResult): string;
 
 declare function scanArtifacts(input: ScanOptions): Promise<ScanResult>;
 
-export { type AdapterContext, type ArtifactFile, type ArtifactKind, DEFAULT_LIMITS, type FileRule, type Finding, type FrameworkAdapter, type PatternRule, type RouteEvidence, type ScanLimits, type ScanOptions, type ScanResult, type Severity, SurfaceGuardError, type SurfaceGuardPolicy, type SurfaceGuardPolicyV1, VERSION, adapters, canonicalizeUrl, decodeTextVariants, genericAdapter, globToRegExp, loadPolicy, matchesGlob, nextjsAdapter, renderJson, renderMarkdown, renderSarif, repeatedlyDecodeUrl, resolveLimits, scanArtifacts, toSarif, validatePolicy, viteAdapter };
+export { type AdapterContext, type ArtifactFile, type ArtifactKind, DEFAULT_LIMITS, type FileRule, type Finding, type FrameworkAdapter, type PatternRule, type RouteEvidence, type ScanCompleteness, type ScanLimits, type ScanOptions, type ScanResult, type Severity, SurfaceGuardError, type SurfaceGuardPolicy, type SurfaceGuardPolicyV1, VERSION, adapters, astroAdapter, canonicalizeUrl, decodeTextVariants, genericAdapter, globToRegExp, loadPolicy, matchesGlob, nextjsAdapter, renderJson, renderMarkdown, renderSarif, repeatedlyDecodeUrl, resolveLimits, scanArtifacts, toSarif, validatePolicy, viteAdapter };

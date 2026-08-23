@@ -9,7 +9,7 @@ inputs:
     description: Path to a SurfaceGuard policy file
     required: true
   adapter:
-    description: 'Adapter override: auto, generic, nextjs, or vite'
+    description: 'Adapter override: auto, astro, generic, nextjs, or vite'
     required: false
     default: auto
   sarif:
@@ -17,7 +17,13 @@ inputs:
     required: false
 outputs:
   findings:
-    description: Total number of findings
+    description: Number of retained finding details, bounded by the policy limit
+  findings-truncated:
+    description: Whether additional finding details were omitted
+  observed-findings-at-least:
+    description: Lower bound on findings observed during scan evaluation
+  text-inspection:
+    description: Text inspection completeness, either complete or incomplete
   failed:
     description: Whether findings met the configured failure threshold
 runs:

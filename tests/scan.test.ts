@@ -57,6 +57,45 @@ describe('artifact scanning', () => {
     );
   });
 
+  it('keeps filesystem delimiters inside Astro artifact routes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-astro-paths-'));
+    temporary.push(root);
+    await mkdir(join(root, '_astro'));
+    await mkdir(join(root, 'docs'));
+    await writeFile(join(root, 'index.html'), '<main>Home</main>', 'utf8');
+    await writeFile(join(root, '_astro/app.js'), 'console.log("public")', 'utf8');
+    await writeFile(join(root, 'docs/private#draft.html'), '<main>Draft</main>', 'utf8');
+    await writeFile(join(root, 'docs/private?draft.html'), '<main>Draft</main>', 'utf8');
+    await writeFile(join(root, 'docs/private%23draft.html'), '<main>Draft</main>', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        routes: {
+          deny: [
+            '/docs/private%23draft.html',
+            '/docs/private%3Fdraft.html',
+            '/docs/private%2523draft.html',
+          ],
+        },
+      },
+    });
+    expect(result.adapter).toBe('astro');
+    expect(
+      new Set(
+        result.findings
+          .filter((finding) => finding.ruleId === 'SG2002')
+          .map((finding) => finding.evidence),
+      ),
+    ).toEqual(
+      new Set([
+        '/docs/private%2523draft.html',
+        '/docs/private%23draft.html',
+        '/docs/private%3Fdraft.html',
+      ]),
+    );
+  });
+
   it('explains every vulnerable fixture class', async () => {
     const policy = await loadPolicy(join(project, 'fixtures/policy.json'));
     const result = await scanArtifacts({
@@ -173,8 +212,259 @@ describe('artifact scanning', () => {
         },
       });
       expect(result.findings).toHaveLength(7);
+      expect(result.statistics.findingsTruncated).toBe(true);
     },
   );
+
+  it('does not let low-severity findings hide a later failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-finding-threshold-'));
+    temporary.push(root);
+    await writeFile(join(root, 'a.js'), 'xxxxx', 'utf8');
+    await writeFile(join(root, 'z.js'), 'SECRET', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        failOn: 'error',
+        limits: { maxFindings: 2 },
+        forbidden: {
+          text: [
+            { id: 'bait', pattern: 'x', severity: 'note' },
+            { id: 'private-copy', pattern: 'SECRET', severity: 'error' },
+          ],
+        },
+      },
+    });
+    expect(result.failed).toBe(true);
+    expect(result.statistics.filesScanned).toBe(2);
+    expect(result.statistics.findingsTruncated).toBe(true);
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'private-copy', severity: 'error' }),
+    );
+  });
+
+  it('lets later high-severity matches displace every retained note', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-finding-priority-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), 'xxxxxSECRETSECRET', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        limits: { maxFindings: 2 },
+        forbidden: {
+          text: [
+            { id: 'bait', pattern: 'x', severity: 'note' },
+            { id: 'private-copy', pattern: 'SECRET', severity: 'error' },
+          ],
+        },
+      },
+    });
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.every((finding) => finding.severity === 'error')).toBe(true);
+    expect(result.failed).toBe(true);
+  });
+
+  it('can truncate note details without turning an error threshold into failure', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-note-truncation-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), 'xxxxx', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        failOn: 'error',
+        limits: { maxFindings: 2 },
+        forbidden: { text: [{ id: 'advisory', pattern: 'x', severity: 'note' }] },
+      },
+    });
+    expect(result.findings).toHaveLength(2);
+    expect(result.completeness.findingDetails).toBe('truncated');
+    expect(result.failed).toBe(false);
+  });
+
+  it.each(['utf-16le', 'utf-16be'] as const)(
+    'scans BOM-tagged %s text artifacts',
+    async (encoding) => {
+      const root = await mkdtemp(join(tmpdir(), `surfaceguard-${encoding}-`));
+      temporary.push(root);
+      const body = Buffer.from('const value = "INTERNAL_ONLY";', 'utf16le');
+      if (encoding === 'utf-16be') body.swap16();
+      const bom = encoding === 'utf-16le' ? [0xff, 0xfe] : [0xfe, 0xff];
+      await writeFile(join(root, 'bundle.js'), Buffer.concat([Buffer.from(bom), body]));
+      const result = await scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+        },
+      });
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({ ruleId: 'private-copy' }),
+      );
+      expect(result.findings).not.toContainEqual(
+        expect.objectContaining({ ruleId: 'SG1003' }),
+      );
+    },
+  );
+
+  it('decodes a BOM-tagged UTF-16 route manifest before route policy evaluation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-utf16-manifest-'));
+    temporary.push(root);
+    await mkdir(join(root, 'server'));
+    const body = Buffer.from(JSON.stringify({ '/private': 'private.js' }), 'utf16le');
+    await writeFile(
+      join(root, 'server/pages-manifest.json'),
+      Buffer.concat([Buffer.from([0xff, 0xfe]), body]),
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        adapter: 'nextjs',
+        routes: { deny: ['/private'] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG2002', evidence: '/private' }),
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'SG1003' }),
+    );
+  });
+
+  it('evaluates valid route escapes adjacent to malformed percent bytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-malformed-route-'));
+    temporary.push(root);
+    await mkdir(join(root, 'server'));
+    await writeFile(
+      join(root, 'server/pages-manifest.json'),
+      JSON.stringify({ '/%2Fprivate%FF': 'private.js' }),
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        adapter: 'nextjs',
+        routes: { deny: ['/private*'] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG2002', evidence: '/private%FF' }),
+    );
+  });
+
+  it('reports one encoding finding when an adapter reads an artifact twice', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-encoding-dedup-'));
+    temporary.push(root);
+    await mkdir(join(root, 'server'));
+    await writeFile(
+      join(root, 'server/pages-manifest.json'),
+      Buffer.concat([Buffer.from([0xff]), Buffer.from('{"/":"index.js"}')]),
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, adapter: 'nextjs' },
+    });
+    expect(result.findings.filter((finding) => finding.ruleId === 'SG1003')).toHaveLength(
+      1,
+    );
+  });
+
+  it('does not apply text-encoding findings to unknown binary artifacts', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-unknown-binary-'));
+    temporary.push(root);
+    await writeFile(join(root, 'image.png'), Buffer.from([0x00, 0xff, 0x00, 0xff]));
+    const result = await scanArtifacts({ root, policy: { schemaVersion: 1 } });
+    expect(result.findings).toEqual([]);
+    expect(result.completeness.textInspection).toBe('complete');
+  });
+
+  it.each([
+    ['control-heavy', Buffer.from('\0INTERNAL_ONLY\0', 'utf8')],
+    [
+      'invalid UTF-8',
+      Buffer.concat([Buffer.from([0xff]), Buffer.from('INTERNAL_ONLY', 'utf8')]),
+    ],
+    [
+      'UTF-32 BOM',
+      Buffer.concat([
+        Buffer.from([0xff, 0xfe, 0x00, 0x00]),
+        Buffer.from('INTERNAL_ONLY', 'utf8'),
+      ]),
+    ],
+  ] as const)(
+    'fails closed for %s while continuing best-effort matching',
+    async (_, body) => {
+      const root = await mkdtemp(join(tmpdir(), 'surfaceguard-ambiguous-text-'));
+      temporary.push(root);
+      await writeFile(join(root, 'bundle.js'), body);
+      const result = await scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+        },
+      });
+      expect(result.failed).toBe(true);
+      expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG1003' }));
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({ ruleId: 'private-copy' }),
+      );
+    },
+  );
+
+  it('fails closed for a detectable unsupported document charset', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-declared-charset-'));
+    temporary.push(root);
+    await writeFile(
+      join(root, 'index.html'),
+      '<meta charset="UTF-7"><main>INTERNAL_ONLY</main>',
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    expect(result.failed).toBe(true);
+    expect(result.completeness.textInspection).toBe('incomplete');
+    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG1003' }));
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'private-copy' }),
+    );
+  });
+
+  it('does not treat BOMless UTF-16 as a clean text artifact', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-bomless-utf16-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), Buffer.from('INTERNAL_ONLY', 'utf16le'));
+    const result = await scanArtifacts({ root, policy: { schemaVersion: 1 } });
+    expect(result.failed).toBe(true);
+    expect(result.completeness.textInspection).toBe('incomplete');
+    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG1003' }));
+  });
+
+  it('does not let a full finding report hide a late ambiguous encoding error', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-late-encoding-'));
+    temporary.push(root);
+    await writeFile(join(root, 'a.js'), 'xxxxx', 'utf8');
+    await writeFile(join(root, 'z.js'), Buffer.from([0x00, 0x00, 0x00, 0x00]));
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        limits: { maxFindings: 1 },
+        forbidden: { text: [{ id: 'bait', pattern: 'x', severity: 'note' }] },
+      },
+    });
+    expect(result.failed).toBe(true);
+    expect(result.findings).toEqual([expect.objectContaining({ ruleId: 'SG1003' })]);
+  });
 
   it('preserves evidence spans after astral Unicode characters', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-unicode-'));
@@ -225,6 +515,29 @@ describe('artifact scanning', () => {
       expect.objectContaining({
         ruleId: 'private-copy',
         evidence: '%49NTERNAL_ONLY',
+        transform: 'raw+percent',
+      }),
+    );
+  });
+
+  it('continues matching before an invalid percent-encoded byte', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-invalid-percent-tail-'));
+    temporary.push(root);
+    const encoded = [...Buffer.from('INTERNAL_ONLY')]
+      .map((byte) => `%${byte.toString(16).padStart(2, '0')}`)
+      .join('');
+    await writeFile(join(root, 'bundle.js'), `${encoded}%FF`, 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'private-copy',
+        evidence: encoded,
         transform: 'raw+percent',
       }),
     );
@@ -289,6 +602,31 @@ describe('artifact scanning', () => {
     );
   });
 
+  it('bounds source-map directive details with linear location tracking', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-map-directives-'));
+    temporary.push(root);
+    await writeFile(
+      join(root, 'bundle.js'),
+      Array.from(
+        { length: 100 },
+        (_value, index) => `//# sourceMappingURL=chunk-${index}.map`,
+      ).join('\n'),
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        limits: { maxFindings: 2 },
+        sourceMaps: { mode: 'forbid', inline: 'forbid' },
+      },
+    });
+    expect(result.findings).toHaveLength(2);
+    expect(result.findings.map((finding) => finding.location?.line)).toEqual([1, 2]);
+    expect(result.completeness.findingDetails).toBe('truncated');
+    expect(result.failed).toBe(true);
+  });
+
   it.each(['sitemap.xml.gz', 'sitemap_index.xml.gz', 'sitemap1.xml.gz'])(
     'inspects gzip sitemap %s within the configured expansion limit',
     async (filename) => {
@@ -311,6 +649,33 @@ describe('artifact scanning', () => {
       );
     },
   );
+
+  it('decodes a BOM-tagged UTF-16 gzip sitemap before policy evaluation', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-utf16-'));
+    temporary.push(root);
+    const xml = Buffer.concat([
+      Buffer.from([0xff, 0xfe]),
+      Buffer.from(
+        '<urlset><url><loc>https://example.test/private</loc></url></urlset>',
+        'utf16le',
+      ),
+    ]);
+    await writeFile(join(root, 'sitemap.xml.gz'), gzipSync(xml));
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        routes: { deny: ['/private'] },
+        sitemap: { mode: 'required', forbidDisallowedRoutes: true },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4004', evidence: '/private' }),
+    );
+    expect(result.findings).not.toContainEqual(
+      expect.objectContaining({ ruleId: 'SG1003' }),
+    );
+  });
 
   it('keeps unsupported gzip XML names outside sitemap handling', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-lookalike-'));

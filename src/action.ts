@@ -57,6 +57,7 @@ async function run(): Promise<void> {
   const adapterValue = input('adapter') || 'auto';
   if (
     adapterValue !== 'auto' &&
+    adapterValue !== 'astro' &&
     adapterValue !== 'generic' &&
     adapterValue !== 'nextjs' &&
     adapterValue !== 'vite'
@@ -71,6 +72,15 @@ async function run(): Promise<void> {
   const result = await scanArtifacts({ root, policy, adapter: adapterValue });
   if (sarifPath) await writeFile(sarifPath, renderSarif(result), 'utf8');
   await setOutput('findings', result.findings.length.toString());
+  await setOutput(
+    'findings-truncated',
+    String(result.completeness.findingDetails === 'truncated'),
+  );
+  await setOutput(
+    'observed-findings-at-least',
+    result.completeness.observedFindingsAtLeast.toString(),
+  );
+  await setOutput('text-inspection', result.completeness.textInspection);
   await setOutput('failed', String(result.failed));
   const summaryPath = process.env.GITHUB_STEP_SUMMARY;
   if (summaryPath) await appendFile(summaryPath, renderMarkdown(result), 'utf8');
@@ -78,7 +88,7 @@ async function run(): Promise<void> {
   if (result.failed) {
     throw new SurfaceGuardError(
       'SG_IO_ERROR',
-      `SurfaceGuard found ${result.findings.length} policy finding(s).`,
+      `SurfaceGuard policy failed. Retained ${result.findings.length} finding detail(s); observed at least ${result.completeness.observedFindingsAtLeast}.`,
     );
   }
 }

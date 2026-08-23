@@ -13,7 +13,13 @@ SurfaceGuard separates artifact discovery, framework interpretation, policy eval
 7. Sort findings and evaluate the configured failure threshold.
 8. Render the immutable scan result as JSON, Markdown, or SARIF.
 
-The scanner holds at most one bounded artifact text plus findings and route evidence in memory. It reads files through 64 KiB stream chunks. Route manifests are parsed only after the file-size gate passes.
+The scanner retains sitemap and robots text only until cross-artifact reconciliation.
+Other recognized text is read and scanned one bounded artifact at a time. It reads files
+through 64 KiB stream chunks. Route manifests are parsed only after the file-size gate
+passes. Recognized files are opened with no-follow semantics and their identity is
+verified before and after streaming, so path swaps and post-discovery growth fail closed.
+Finding details are capped and severity-prioritized; threshold evaluation remains
+independent from retained details.
 
 ## Core modules
 
@@ -34,7 +40,7 @@ A `FrameworkAdapter` has three operations:
 
 Adapters receive only produced files and a bounded text reader. They must not depend on source folders or network access.
 
-The Next.js adapter reads known output manifest shapes by field name. The Vite adapter reads produced HTML entry paths and validates the default build manifest without treating source keys as routes. Unknown fields are ignored. A malformed known manifest produces `SG1004` and does not terminate the full scan.
+The Next.js adapter reads known output manifest shapes by field name. The Vite adapter reads produced HTML entry paths and validates the default build manifest without treating source keys as routes. The Astro adapter derives static page routes from produced HTML paths and uses the reserved `_astro/` asset directory only as an automatic-detection signal. Unknown fields are ignored. A syntactically malformed known manifest produces `SG1004` and does not terminate the full scan; operational read, abort, and resource errors remain machine-readable runtime errors.
 
 ## Determinism
 

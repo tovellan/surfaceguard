@@ -1,5 +1,7 @@
 import { basename, extname } from 'node:path';
 
+import { rethrowOperationalError } from '../errors.js';
+import { AdapterBudget } from './limits.js';
 import type {
   AdapterContext,
   ArtifactKind,
@@ -56,25 +58,51 @@ export function classifyGeneric(relativePath: string): ArtifactKind {
 function walkRoutes(
   value: unknown,
   artifactPath: string,
-  pointer: string,
   routes: RouteEvidence[],
-  key?: string,
+  budget: AdapterBudget,
 ): void {
-  if (typeof value === 'string') {
-    if (value.startsWith('/') && (key === undefined || ROUTE_KEYS.has(key))) {
-      routes.push({ route: value, artifactPath, pointer });
+  const pending: { value: unknown; pointer: string; key?: string }[] = [
+    { value, pointer: '' },
+  ];
+  while (pending.length > 0) {
+    budget.checkSignal();
+    const current = pending.pop();
+    if (!current) continue;
+    if (typeof current.value === 'string') {
+      if (
+        current.value.startsWith('/') &&
+        (current.key === undefined || ROUTE_KEYS.has(current.key))
+      ) {
+        budget.addRoute(routes, {
+          route: current.value,
+          artifactPath,
+          pointer: current.pointer,
+        });
+      }
+      continue;
     }
-    return;
-  }
-  if (Array.isArray(value)) {
-    value.forEach((item, index) =>
-      walkRoutes(item, artifactPath, `${pointer}/${index}`, routes, key),
-    );
-    return;
-  }
-  if (!value || typeof value !== 'object') return;
-  for (const [childKey, child] of Object.entries(value as Record<string, unknown>)) {
-    walkRoutes(child, artifactPath, `${pointer}/${childKey}`, routes, childKey);
+    if (Array.isArray(current.value)) {
+      for (let index = current.value.length - 1; index >= 0; index -= 1) {
+        pending.push({
+          value: current.value[index],
+          pointer: `${current.pointer}/${index}`,
+          ...(current.key === undefined ? {} : { key: current.key }),
+        });
+      }
+      continue;
+    }
+    if (!current.value || typeof current.value !== 'object') continue;
+    const record = current.value as Record<string, unknown>;
+    const keys = Object.keys(record);
+    for (let index = keys.length - 1; index >= 0; index -= 1) {
+      const childKey = keys[index];
+      if (childKey === undefined) continue;
+      pending.push({
+        value: record[childKey],
+        pointer: `${current.pointer}/${childKey}`,
+        key: childKey,
+      });
+    }
   }
 }
 
@@ -88,13 +116,16 @@ export const genericAdapter: FrameworkAdapter = {
   }> {
     const routes: RouteEvidence[] = [];
     const findings: Finding[] = [];
+    const budget = new AdapterBudget(context);
     for (const file of context.files.filter(
       (candidate) => candidate.kind === 'route-manifest',
     )) {
       try {
         const value = JSON.parse(await context.readText(file)) as unknown;
-        walkRoutes(value, file.relativePath, '', routes);
+        budget.inspectManifest(value, file.relativePath);
+        walkRoutes(value, file.relativePath, routes, budget);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: 'SG1004',
           severity: 'error',

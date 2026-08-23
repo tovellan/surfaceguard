@@ -7,7 +7,7 @@
   "required": ["schemaVersion"],
   "properties": {
     "schemaVersion": { "const": 1 },
-    "adapter": { "enum": ["auto", "generic", "nextjs", "vite"] },
+    "adapter": { "enum": ["auto", "astro", "generic", "nextjs", "vite"] },
     "failOn": { "$ref": "#/$defs/severity" },
     "exclude": {
       "type": "array",
@@ -59,9 +59,15 @@
       "type": "object",
       "additionalProperties": false,
       "properties": {
+        "maxEntries": { "$ref": "#/$defs/positiveInteger" },
+        "maxDirectories": { "$ref": "#/$defs/positiveInteger" },
+        "maxDepth": { "$ref": "#/$defs/positiveInteger" },
         "maxFiles": { "$ref": "#/$defs/positiveInteger" },
         "maxFileBytes": { "$ref": "#/$defs/positiveInteger" },
         "maxTotalBytes": { "$ref": "#/$defs/positiveInteger" },
+        "maxRoutes": { "$ref": "#/$defs/positiveInteger" },
+        "maxManifestEntries": { "$ref": "#/$defs/positiveInteger" },
+        "maxSitemapEntries": { "$ref": "#/$defs/positiveInteger" },
         "maxFindings": { "$ref": "#/$defs/positiveInteger" },
         "maxDecodePasses": { "$ref": "#/$defs/positiveInteger" },
         "maxPatternLength": { "$ref": "#/$defs/positiveInteger" }

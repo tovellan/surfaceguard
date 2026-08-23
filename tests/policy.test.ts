@@ -6,8 +6,16 @@ import { resolveLimits, validatePolicy } from '../src/policy.js';
 describe('policy validation', () => {
   it('accepts a minimal version 1 policy and supplies limits', () => {
     const policy = validatePolicy({ schemaVersion: 1 });
-    expect(resolveLimits(policy).maxFiles).toBeGreaterThan(1_000);
+    const limits = resolveLimits(policy);
+    expect(limits.maxFiles).toBeGreaterThan(1_000);
+    expect(limits.maxEntries).toBeGreaterThan(0);
+    expect(limits.maxDirectories).toBeGreaterThan(0);
+    expect(limits.maxDepth).toBeGreaterThan(0);
+    expect(limits.maxRoutes).toBeGreaterThan(0);
+    expect(limits.maxManifestEntries).toBeGreaterThan(0);
+    expect(limits.maxSitemapEntries).toBeGreaterThan(0);
     expect(validatePolicy({ schemaVersion: 1, adapter: 'vite' }).adapter).toBe('vite');
+    expect(validatePolicy({ schemaVersion: 1, adapter: 'astro' }).adapter).toBe('astro');
   });
 
   it.each([

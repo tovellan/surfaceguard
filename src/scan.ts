@@ -3,12 +3,7 @@ import { basename } from 'node:path';
 import { selectAdapter } from './adapters/index.js';
 import { canonicalizeUrl } from './decode.js';
 import { SurfaceGuardError } from './errors.js';
-import {
-  appearsBinary,
-  discoverFiles,
-  readFileStreaming,
-  readGzipTextStreaming,
-} from './filesystem.js';
+import { discoverFiles, readFileStreaming, readGzipTextStreaming } from './filesystem.js';
 import { matchesGlob } from './glob.js';
 import { matchPatternRule } from './matcher.js';
 import { resolveLimits, validatePolicy } from './policy.js';
@@ -49,7 +44,10 @@ function evaluateRoutes(
   const findings: Finding[] = [];
   const normalized = new Map<string, RouteEvidence>();
   for (const evidence of routes) {
-    const route = normalizeRoute(evidence.route, maxDecodePasses);
+    const route = normalizeRoute(
+      evidence.route,
+      evidence.routeKind === 'artifact-path' ? 0 : maxDecodePasses,
+    );
     if (!normalized.has(route)) normalized.set(route, evidence);
   }
   const assertions = options.policy.routes;
@@ -101,6 +99,8 @@ function evaluateSitemap(
   texts: ReadonlyMap<string, string>,
   routes: ReadonlyMap<string, RouteEvidence>,
   maxDecodePasses: number,
+  maxSitemapEntries: number,
+  signal?: AbortSignal,
 ): Finding[] {
   const settings = policy.sitemap;
   if (!settings || settings.mode === 'off') return [];
@@ -120,9 +120,16 @@ function evaluateSitemap(
   if (sitemapFiles.length === 0) return findings;
 
   const sitemapRoutes = new Map<string, string>();
+  let entriesVisited = 0;
   for (const file of sitemapFiles) {
     const text = texts.get(file.relativePath) ?? '';
-    for (const route of parseSitemap(text, maxDecodePasses)) {
+    const parsed = parseSitemap(text, maxDecodePasses, {
+      maxEntries: maxSitemapEntries,
+      entriesVisited,
+      ...(signal ? { signal } : {}),
+    });
+    entriesVisited = parsed.entriesVisited;
+    for (const route of parsed.routes) {
       sitemapRoutes.set(normalizeRoute(route, maxDecodePasses), file.relativePath);
     }
   }
@@ -207,10 +214,92 @@ function sortFindings(findings: Finding[]): Finding[] {
   );
 }
 
+function encodingFinding(file: ArtifactFile): Finding {
+  return {
+    ruleId: 'SG1003',
+    severity: 'error',
+    category: 'filesystem',
+    artifactPath: file.relativePath,
+    message: 'Text artifact uses an unsupported or ambiguous encoding',
+    help: 'Encode textual public artifacts as valid UTF-8 or BOM-tagged UTF-16LE/BE.',
+  };
+}
+
+class FindingCollector {
+  readonly findings: Finding[] = [];
+  truncated = false;
+  failureObserved = false;
+  observedFindingsAtLeast = 0;
+
+  constructor(
+    private readonly maximum: number,
+    private readonly failOn: Severity,
+  ) {}
+
+  add(finding: Finding): void {
+    this.observedFindingsAtLeast += 1;
+    const rank = SEVERITY_RANK[finding.severity];
+    if (rank >= SEVERITY_RANK[this.failOn]) this.failureObserved = true;
+    if (this.findings.length < this.maximum) {
+      this.findings.push(finding);
+      return;
+    }
+
+    this.truncated = true;
+    let lowest = this.findings.length - 1;
+    for (let index = this.findings.length - 2; index >= 0; index -= 1) {
+      if (
+        SEVERITY_RANK[this.findings[index]?.severity ?? 'error'] <
+        SEVERITY_RANK[this.findings[lowest]?.severity ?? 'error']
+      ) {
+        lowest = index;
+      }
+    }
+    if (rank > SEVERITY_RANK[this.findings[lowest]?.severity ?? 'error']) {
+      this.findings[lowest] = finding;
+    }
+  }
+
+  addAll(findings: readonly Finding[]): void {
+    for (const finding of findings) this.add(finding);
+  }
+
+  observeOmitted(count: number, severity: Severity): void {
+    if (count <= 0) return;
+    this.observedFindingsAtLeast += count;
+    this.truncated = true;
+    if (SEVERITY_RANK[severity] >= SEVERITY_RANK[this.failOn]) {
+      this.failureObserved = true;
+    }
+  }
+
+  matchLimit(severity: Severity): number {
+    const rank = SEVERITY_RANK[severity];
+    const freeSlots = this.maximum - this.findings.length;
+    const replaceable = this.findings.filter(
+      (finding) => SEVERITY_RANK[finding.severity] < rank,
+    ).length;
+    return Math.min(this.maximum + 1, Math.max(1, freeSlots + replaceable + 1));
+  }
+}
+
 export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
   const policy = validatePolicy(input.policy);
   const limits = resolveLimits(policy);
-  const discovered = await discoverFiles(input.root, limits, policy.exclude ?? []);
+  const discovered = await discoverFiles(
+    input.root,
+    limits,
+    policy.exclude ?? [],
+    input.signal,
+  );
+  const failOn = policy.failOn ?? 'error';
+  const collector = new FindingCollector(limits.maxFindings, failOn);
+  collector.addAll(discovered.findings);
+  collector.observeOmitted(
+    discovered.findingsObserved - discovered.findings.length,
+    'error',
+  );
+  if (discovered.findingsTruncated) collector.truncated = true;
   if (input.signal?.aborted)
     throw new SurfaceGuardError('SG_ABORTED', 'Artifact scan was aborted');
 
@@ -220,6 +309,7 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
     file.kind = adapter.classify(file.relativePath) ?? 'unknown';
 
   const texts = new Map<string, string>();
+  const unsupportedTextArtifacts = new Set<string>();
   let expandedBytes = 0;
   const readText = async (file: ArtifactFile): Promise<string> => {
     const cached = texts.get(file.relativePath);
@@ -234,10 +324,21 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
       );
       text = expanded.text;
       expandedBytes += expanded.outputBytes;
+      if (!expanded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
+        unsupportedTextArtifacts.add(file.relativePath);
+        collector.add(encodingFinding(file));
+      }
     } else {
-      text = await readFileStreaming(file, limits, input.signal);
+      const decoded = await readFileStreaming(file, limits, input.signal);
+      text = decoded.text;
+      if (!decoded.valid && !unsupportedTextArtifacts.has(file.relativePath)) {
+        unsupportedTextArtifacts.add(file.relativePath);
+        collector.add(encodingFinding(file));
+      }
     }
-    texts.set(file.relativePath, text);
+    if (file.kind === 'sitemap' || file.kind === 'robots') {
+      texts.set(file.relativePath, text);
+    }
     return text;
   };
 
@@ -245,17 +346,16 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
     root: discovered.root,
     files: discovered.files,
     readText,
+    limits,
+    ...(input.signal ? { signal: input.signal } : {}),
   });
   const evaluatedRoutes = evaluateRoutes(
     routeResult.routes,
     { ...input, policy },
     limits.maxDecodePasses,
   );
-  const findings: Finding[] = [
-    ...discovered.findings,
-    ...routeResult.findings,
-    ...evaluatedRoutes.findings,
-  ];
+  collector.addAll(routeResult.findings);
+  collector.addAll(evaluatedRoutes.findings);
   let filesScanned = 0;
 
   for (const file of discovered.files) {
@@ -263,7 +363,7 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
       throw new SurfaceGuardError('SG_ABORTED', 'Artifact scan was aborted');
     for (const rule of policy.forbidden?.files ?? []) {
       if (matchesGlob(file.relativePath, rule.glob)) {
-        findings.push({
+        collector.add({
           ruleId: rule.id,
           severity: rule.severity ?? 'error',
           category: 'file',
@@ -275,7 +375,7 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
       }
     }
     if (file.kind === 'source-map' && policy.sourceMaps?.mode === 'forbid') {
-      findings.push({
+      collector.add({
         ruleId: 'SG3001',
         severity: 'error',
         category: 'source-map',
@@ -287,16 +387,27 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
     if (file.kind === 'unknown') continue;
 
     const text = await readText(file);
-    if (appearsBinary(text)) continue;
     filesScanned += 1;
 
     if (policy.sourceMaps?.mode === 'forbid') {
       const directive = /[/#@]\s*sourceMappingURL\s*=\s*([^\s*]+)/giu;
+      const directiveLimit = collector.matchLimit('error');
+      let directivesObserved = 0;
+      let line = 1;
+      let lineStart = 0;
+      let locationCursor = 0;
       let match: RegExpExecArray | null;
       while ((match = directive.exec(text)) !== null) {
         const inline = match[1]?.startsWith('data:') ?? false;
         if (inline && policy.sourceMaps.inline === 'allow') continue;
-        findings.push({
+        let newline = text.indexOf('\n', locationCursor);
+        while (newline >= 0 && newline < match.index) {
+          line += 1;
+          lineStart = newline + 1;
+          locationCursor = newline + 1;
+          newline = text.indexOf('\n', locationCursor);
+        }
+        collector.add({
           ruleId: inline ? 'SG3002' : 'SG3003',
           severity: 'error',
           category: 'source-map',
@@ -306,11 +417,13 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
             : 'Source map reference is forbidden by policy',
           evidence: match[0],
           location: {
-            line: text.slice(0, match.index).split('\n').length,
-            column: match.index - text.lastIndexOf('\n', match.index - 1),
+            line,
+            column: match.index - lineStart + 1,
             offset: match.index,
           },
         });
+        directivesObserved += 1;
+        if (directivesObserved >= directiveLimit) break;
       }
     }
 
@@ -321,12 +434,15 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
     ] as const;
     for (const [category, rules] of groups) {
       for (const rule of rules) {
-        findings.push(...matchPatternRule(text, file, rule, category, limits));
-        if (findings.length >= limits.maxFindings) break;
+        const severity = rule.severity ?? 'error';
+        collector.addAll(
+          matchPatternRule(text, file, rule, category, {
+            ...limits,
+            maxFindings: collector.matchLimit(severity),
+          }),
+        );
       }
-      if (findings.length >= limits.maxFindings) break;
     }
-    if (findings.length >= limits.maxFindings) break;
   }
 
   for (const file of discovered.files.filter(
@@ -334,18 +450,18 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
   )) {
     if (!texts.has(file.relativePath)) await readText(file);
   }
-  findings.push(
-    ...evaluateSitemap(
+  collector.addAll(
+    evaluateSitemap(
       policy,
       discovered.files,
       texts,
       evaluatedRoutes.normalized,
       limits.maxDecodePasses,
+      limits.maxSitemapEntries,
+      input.signal,
     ),
   );
-  if (findings.length > limits.maxFindings) findings.length = limits.maxFindings;
-  const sorted = sortFindings(findings);
-  const failOn = policy.failOn ?? 'error';
+  const sorted = sortFindings(collector.findings);
 
   return {
     schemaVersion: 1,
@@ -358,9 +474,16 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
       filesScanned,
       bytesVisited: discovered.files.reduce((total, file) => total + file.size, 0),
       routesFound: evaluatedRoutes.normalized.size,
+      findingsTruncated: collector.truncated,
     },
-    failed: sorted.some(
-      (finding) => SEVERITY_RANK[finding.severity] >= SEVERITY_RANK[failOn],
-    ),
+    completeness: {
+      textInspection: unsupportedTextArtifacts.size === 0 ? 'complete' : 'incomplete',
+      findingDetails: collector.truncated ? 'truncated' : 'complete',
+      findingLimit: limits.maxFindings,
+      retainedFindings: sorted.length,
+      observedFindingsAtLeast: collector.observedFindingsAtLeast,
+      unsupportedTextArtifacts: unsupportedTextArtifacts.size,
+    },
+    failed: collector.failureObserved,
   };
 }

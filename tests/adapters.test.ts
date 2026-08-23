@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
+import { astroAdapter } from '../src/adapters/astro.js';
 import { classifyGeneric, genericAdapter } from '../src/adapters/generic.js';
 import { selectAdapter } from '../src/adapters/index.js';
 import { nextjsAdapter } from '../src/adapters/nextjs.js';
 import { viteAdapter } from '../src/adapters/vite.js';
+import { DEFAULT_LIMITS } from '../src/constants.js';
+import { SurfaceGuardError } from '../src/errors.js';
 import type { ArtifactFile, ArtifactKind } from '../src/types.js';
 
 function file(relativePath: string, kind: ArtifactKind = 'route-manifest'): ArtifactFile {
@@ -71,6 +74,7 @@ describe('framework adapters', () => {
     const result = await nextjsAdapter.collectRoutes({
       root: '/',
       files,
+      limits: DEFAULT_LIMITS,
       readText: (candidate) =>
         Promise.resolve(JSON.stringify(content[candidate.relativePath])),
     });
@@ -105,6 +109,7 @@ describe('framework adapters', () => {
     const result = await genericAdapter.collectRoutes({
       root: '/',
       files: [manifest],
+      limits: DEFAULT_LIMITS,
       readText: () =>
         Promise.resolve(
           JSON.stringify({
@@ -116,17 +121,123 @@ describe('framework adapters', () => {
     expect(result.routes.map((item) => item.route)).toEqual(['/one', '/two']);
   });
 
+  it('propagates operational read errors instead of calling a manifest malformed', async () => {
+    const manifest = file('route-manifest.json');
+    const error = new SurfaceGuardError('SG_IO_ERROR', 'synthetic read failure');
+    await expect(
+      genericAdapter.collectRoutes({
+        root: '/',
+        files: [manifest],
+        limits: DEFAULT_LIMITS,
+        readText: () => Promise.reject(error),
+      }),
+    ).rejects.toBe(error);
+  });
+
+  it('collects exact routes from Astro static HTML output', async () => {
+    const files = [
+      file('index.html', 'metadata'),
+      file('about/index.html', 'metadata'),
+      file('blog/post/index.html', 'metadata'),
+      file('contact.html', 'metadata'),
+      file('404.html', 'metadata'),
+      file('docs/a#b.html', 'metadata'),
+      file('docs/a?b.html', 'metadata'),
+      file('docs/a%23b.html', 'metadata'),
+      file('_astro/page.abc123.js', 'client-chunk'),
+    ];
+    const result = await astroAdapter.collectRoutes({
+      root: '/',
+      files,
+      limits: DEFAULT_LIMITS,
+      readText: () => Promise.resolve(''),
+    });
+    expect(result.routes).toEqual([
+      {
+        route: '/',
+        artifactPath: 'index.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/about/',
+        artifactPath: 'about/index.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/blog/post/',
+        artifactPath: 'blog/post/index.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/contact.html',
+        artifactPath: 'contact.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/404.html',
+        artifactPath: '404.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/docs/a%23b.html',
+        artifactPath: 'docs/a#b.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/docs/a%3Fb.html',
+        artifactPath: 'docs/a?b.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+      {
+        route: '/docs/a%2523b.html',
+        artifactPath: 'docs/a%23b.html',
+        pointer: '/',
+        routeKind: 'artifact-path',
+      },
+    ]);
+    expect(result.findings).toEqual([]);
+  });
+
+  it('detects and classifies default Astro static output', () => {
+    const files = [
+      file('index.html', 'metadata'),
+      file('_astro/page.abc123.js', 'client-chunk'),
+    ];
+    expect(astroAdapter.detect(files)).toBeGreaterThan(viteAdapter.detect(files));
+    expect(selectAdapter('auto', files).name).toBe('astro');
+    expect(selectAdapter('astro', files)).toBe(astroAdapter);
+    expect(astroAdapter.classify('index.html')).toBe('metadata');
+    expect(astroAdapter.classify('_astro/page.abc123.js')).toBe('client-chunk');
+    expect(astroAdapter.classify('_astro/page.abc123.js.map')).toBe('source-map');
+    expect(astroAdapter.classify('_astro/styles.abc123.css')).toBe('static-asset');
+    expect(astroAdapter.classify('custom/chunks/page.abc123.mjs')).toBe('client-chunk');
+    expect(astroAdapter.classify('server/render.mjs')).toBe('server-bundle');
+    expect(astroAdapter.detect([file('_astro/page.abc123.js', 'client-chunk')])).toBe(0);
+    expect(astroAdapter.detect([file('index.html', 'metadata')])).toBe(0);
+  });
+
   it('collects Vite HTML entry routes without treating manifest keys as URLs', async () => {
     const files = [
       file('index.html', 'metadata'),
       file('about.html', 'metadata'),
       file('blog/index.html', 'metadata'),
+      file('docs/a#b.html', 'metadata'),
+      file('docs/a?b.html', 'metadata'),
+      file('docs/a%23b.html', 'metadata'),
       file('.vite/manifest.json', 'metadata'),
       file('assets/main.js', 'client-chunk'),
     ];
     const result = await viteAdapter.collectRoutes({
       root: '/',
       files,
+      limits: DEFAULT_LIMITS,
       readText: () =>
         Promise.resolve(
           JSON.stringify({
@@ -142,6 +253,9 @@ describe('framework adapters', () => {
       '/',
       '/about.html',
       '/blog/index.html',
+      '/docs/a%23b.html',
+      '/docs/a%3Fb.html',
+      '/docs/a%2523b.html',
     ]);
     expect(result.findings).toEqual([]);
     expect(viteAdapter.classify('.vite/manifest.json')).toBe('metadata');
@@ -154,6 +268,7 @@ describe('framework adapters', () => {
     const result = await viteAdapter.collectRoutes({
       root: '/',
       files,
+      limits: DEFAULT_LIMITS,
       readText: () => Promise.resolve('{'),
     });
     expect(result.routes.map((item) => item.route)).toEqual(['/']);
@@ -170,6 +285,7 @@ describe('framework adapters', () => {
     const result = await viteAdapter.collectRoutes({
       root: '/',
       files: [manifest],
+      limits: DEFAULT_LIMITS,
       readText: () => Promise.resolve(JSON.stringify({ 'src/main.ts': { isEntry: true } })),
     });
     expect(result.findings).toContainEqual(

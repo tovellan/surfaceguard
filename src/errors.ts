@@ -29,3 +29,13 @@ export class SurfaceGuardError extends Error {
     };
   }
 }
+
+export function throwIfAborted(signal?: AbortSignal): void {
+  if (signal?.aborted) {
+    throw new SurfaceGuardError('SG_ABORTED', 'Artifact scan was aborted');
+  }
+}
+
+export function rethrowOperationalError(error: unknown): void {
+  if (error instanceof SurfaceGuardError) throw error;
+}

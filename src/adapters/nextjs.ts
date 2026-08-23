@@ -1,6 +1,8 @@
 import { basename } from 'node:path';
 
 import { classifyGeneric } from './generic.js';
+import { AdapterBudget } from './limits.js';
+import { rethrowOperationalError } from '../errors.js';
 import type {
   ArtifactFile,
   ArtifactKind,
@@ -23,6 +25,7 @@ function addRoute(
   route: unknown,
   file: ArtifactFile,
   pointer: string,
+  budget: AdapterBudget,
   normalize: (value: string) => string | undefined = (value) => value,
 ): void {
   if (typeof route !== 'string' || !route.startsWith('/')) return;
@@ -31,7 +34,11 @@ function addRoute(
   const key = `${normalized}\0${file.relativePath}\0${pointer}`;
   if (seen.has(key)) return;
   seen.add(key);
-  routes.push({ route: normalized, artifactPath: file.relativePath, pointer });
+  budget.addRoute(routes, {
+    route: normalized,
+    artifactPath: file.relativePath,
+    pointer,
+  });
 }
 
 function normalizeAppPath(route: string): string | undefined {
@@ -68,6 +75,7 @@ function collectNextRoutes(
   value: unknown,
   file: ArtifactFile,
   routes: RouteEvidence[],
+  budget: AdapterBudget,
 ): void {
   const root = objectValue(value);
   if (!root) throw new TypeError('Manifest root must be an object');
@@ -75,19 +83,21 @@ function collectNextRoutes(
   const name = basename(file.relativePath);
 
   if (name === 'pages-manifest.json') {
-    Object.keys(root).forEach((route) => addRoute(routes, seen, route, file, `/${route}`));
+    Object.keys(root).forEach((route) =>
+      addRoute(routes, seen, route, file, `/${route}`, budget),
+    );
     return;
   }
   if (name === 'app-paths-manifest.json') {
     Object.keys(root).forEach((route) =>
-      addRoute(routes, seen, route, file, `/${route}`, normalizeAppPath),
+      addRoute(routes, seen, route, file, `/${route}`, budget, normalizeAppPath),
     );
     return;
   }
   if (name === 'build-manifest.json') {
     const pages = objectValue(root.pages);
     Object.keys(pages ?? {}).forEach((route) =>
-      addRoute(routes, seen, route, file, `/pages/${route}`),
+      addRoute(routes, seen, route, file, `/pages/${route}`, budget),
     );
     return;
   }
@@ -95,7 +105,7 @@ function collectNextRoutes(
     for (const section of ['routes', 'dynamicRoutes'] as const) {
       const entries = objectValue(root[section]);
       Object.keys(entries ?? {}).forEach((route) =>
-        addRoute(routes, seen, route, file, `/${section}/${route}`),
+        addRoute(routes, seen, route, file, `/${section}/${route}`, budget),
       );
     }
     return;
@@ -118,6 +128,7 @@ function collectNextRoutes(
             candidate?.page ?? candidate?.source ?? candidate?.pathname,
             file,
             `/${section}/${index}`,
+            budget,
           );
         });
       } else if (section === 'rewrites') {
@@ -126,7 +137,14 @@ function collectNextRoutes(
           if (!Array.isArray(groupEntries)) continue;
           groupEntries.forEach((entry, index) => {
             const candidate = objectValue(entry);
-            addRoute(routes, seen, candidate?.source, file, `/rewrites/${group}/${index}`);
+            addRoute(
+              routes,
+              seen,
+              candidate?.source,
+              file,
+              `/rewrites/${group}/${index}`,
+              budget,
+            );
           });
         }
       }
@@ -153,18 +171,18 @@ export const nextjsAdapter: FrameworkAdapter = {
   async collectRoutes(context): Promise<{ routes: RouteEvidence[]; findings: Finding[] }> {
     const routes: RouteEvidence[] = [];
     const findings: Finding[] = [];
+    const budget = new AdapterBudget(context);
     for (const file of context.files.filter(
       (candidate) =>
         candidate.kind === 'route-manifest' &&
         NEXT_MANIFESTS.has(basename(candidate.relativePath)),
     )) {
       try {
-        collectNextRoutes(
-          JSON.parse(await context.readText(file)) as unknown,
-          file,
-          routes,
-        );
+        const value = JSON.parse(await context.readText(file)) as unknown;
+        budget.inspectManifest(value, file.relativePath);
+        collectNextRoutes(value, file, routes, budget);
       } catch (error) {
+        rethrowOperationalError(error);
         findings.push({
           ruleId: 'SG1004',
           severity: 'error',

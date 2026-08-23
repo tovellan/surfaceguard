@@ -4,17 +4,17 @@ SurfaceGuard policies are JSON documents. `schemaVersion` is required and must b
 
 ## Top-level properties
 
-| Property        | Type                                | Behavior                                                             |
-| --------------- | ----------------------------------- | -------------------------------------------------------------------- |
-| `schemaVersion` | `1`                                 | Selects the policy contract.                                         |
-| `adapter`       | `auto`, `generic`, `nextjs`, `vite` | Selects or detects a framework adapter.                              |
-| `failOn`        | `error`, `warning`, `note`          | Sets the lowest severity that returns exit code 1. Default: `error`. |
-| `exclude`       | string array                        | Glob patterns excluded before file accounting and scanning.          |
-| `routes`        | object                              | Route allow, deny, and required assertions.                          |
-| `sourceMaps`    | object                              | Source-map file and directive behavior.                              |
-| `forbidden`     | object                              | Text, endpoint, metadata, and filename rules.                        |
-| `sitemap`       | object                              | Sitemap and robots consistency behavior.                             |
-| `limits`        | object                              | Resource ceilings.                                                   |
+| Property        | Type                                         | Behavior                                                             |
+| --------------- | -------------------------------------------- | -------------------------------------------------------------------- |
+| `schemaVersion` | `1`                                          | Selects the policy contract.                                         |
+| `adapter`       | `auto`, `astro`, `generic`, `nextjs`, `vite` | Selects or detects a framework adapter.                              |
+| `failOn`        | `error`, `warning`, `note`                   | Sets the lowest severity that returns exit code 1. Default: `error`. |
+| `exclude`       | string array                                 | Glob patterns excluded before file accounting and scanning.          |
+| `routes`        | object                                       | Route allow, deny, and required assertions.                          |
+| `sourceMaps`    | object                                       | Source-map file and directive behavior.                              |
+| `forbidden`     | object                                       | Text, endpoint, metadata, and filename rules.                        |
+| `sitemap`       | object                                       | Sitemap and robots consistency behavior.                             |
+| `limits`        | object                                       | Resource ceilings.                                                   |
 
 Glob matching uses slash-separated artifact paths. Route patterns match normalized URL paths.
 
@@ -105,16 +105,27 @@ Gzip sitemaps are expanded while streaming. Both the compressed file and expande
 
 ## Limits
 
-| Property           |     Default |
-| ------------------ | ----------: |
-| `maxFiles`         |      50,000 |
-| `maxFileBytes`     |  16,777,216 |
-| `maxTotalBytes`    | 536,870,912 |
-| `maxFindings`      |       1,000 |
-| `maxDecodePasses`  |           3 |
-| `maxPatternLength` |       1,024 |
+| Property             |     Default |
+| -------------------- | ----------: |
+| `maxEntries`         |     100,000 |
+| `maxDirectories`     |      10,000 |
+| `maxDepth`           |          64 |
+| `maxFiles`           |      50,000 |
+| `maxFileBytes`       |  16,777,216 |
+| `maxTotalBytes`      | 536,870,912 |
+| `maxRoutes`          |      50,000 |
+| `maxManifestEntries` |     100,000 |
+| `maxSitemapEntries`  |      50,000 |
+| `maxFindings`        |       1,000 |
+| `maxDecodePasses`    |           3 |
+| `maxPatternLength`   |       1,024 |
 
-Every override must be a positive safe integer. Reaching a byte or file limit returns machine-readable exit code 2. Findings are capped at `maxFindings`.
+Every override must be a positive safe integer. `maxEntries` and `maxDirectories` bound filesystem discovery before its work queues can grow without limit. `maxDepth` bounds both nested directories and JSON-manifest traversal. `maxRoutes` bounds retained adapter route evidence, `maxManifestEntries` bounds cumulative JSON-manifest traversal, and `maxSitemapEntries` bounds cumulative sitemap `<loc>` entries. Reaching a resource limit returns machine-readable exit code 2. Finding details are capped at `maxFindings`; failure evaluation continues independently. `ScanResult.completeness` reports the retained limit, observed lower bound, finding-detail truncation, and text-inspection state. `statistics.findingsTruncated` is the convenience truncation flag.
+
+Recognized text accepts valid UTF-8 or BOM-tagged UTF-16LE/BE. Invalid sequences,
+control bytes, unsupported BOMs, and detectable unsupported HTML, XML, SVG, or CSS
+charset declarations produce `SG1003`. Best-effort matching continues, but the result
+marks text inspection incomplete.
 
 ## Built-in rule IDs
 
@@ -122,6 +133,7 @@ Every override must be a positive safe integer. Reaching a byte or file limit re
 | -------- | -------------------------------------------------- |
 | `SG1001` | Path escaped the root.                             |
 | `SG1002` | Nested symlink was not followed.                   |
+| `SG1003` | Text used an unsupported or ambiguous encoding.    |
 | `SG1004` | Known route manifest was malformed.                |
 | `SG2001` | Route was outside the allow list.                  |
 | `SG2002` | Route matched a deny assertion.                    |

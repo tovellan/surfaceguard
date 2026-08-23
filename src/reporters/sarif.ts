@@ -22,6 +22,14 @@ export function toSarif(result: ScanResult): Record<string, unknown> {
     version: '2.1.0',
     runs: [
       {
+        properties: {
+          textInspection: result.completeness.textInspection,
+          findingDetails: result.completeness.findingDetails,
+          findingLimit: result.completeness.findingLimit,
+          retainedFindings: result.completeness.retainedFindings,
+          observedFindingsAtLeast: result.completeness.observedFindingsAtLeast,
+          unsupportedTextArtifacts: result.completeness.unsupportedTextArtifacts,
+        },
         tool: {
           driver: {
             name: 'SurfaceGuard',

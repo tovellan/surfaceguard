@@ -24,4 +24,12 @@ App Router paths are normalized before policy evaluation. Route groups and paral
 
 The Vite adapter recognizes the default `.vite/manifest.json` build manifest and produced HTML entry points. HTML route evidence preserves Vite's output path contract: `index.html` maps to `/`, while other HTML files retain their relative filename under a leading slash. Manifest source keys and asset filenames are not treated as public routes.
 
+Vite and Astro filesystem route segments are percent-encoded before policy
+normalization. Literal `%`, `?`, and `#` characters therefore remain part of the
+produced path instead of becoming a second decoding pass, query, or fragment.
+
+The Astro adapter supports static output directories. It maps root `index.html` to `/`, nested `index.html` files to directory routes with a trailing slash, and other HTML files to their exact output path under a leading slash. This covers Astro's `directory`, `file`, and `preserve` build formats from produced artifacts without reading source routes. JavaScript in default or customized asset directories is classified as a client chunk, while server-directory JavaScript keeps its server-bundle classification.
+
+Automatic Astro detection requires both produced HTML and a file under Astro's default reserved `_astro/` asset directory. Select `adapter: astro` explicitly when `build.assets` is customized or a static build has no generated client assets. Server-adapter output and non-HTML endpoint inference are outside this adapter's static-output contract.
+
 Gzip sitemaps are expanded while streaming under the configured file and total-byte limits. Recognized names include `sitemap.xml.gz`, numbered forms such as `sitemap1.xml.gz`, and index forms such as `sitemap_index.xml.gz`. Other compressed assets and archives are not expanded.
