@@ -22,6 +22,8 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 - Required the generic public tagger identity and an exact attribution-free tag message.
 - Made draft creation, asset upload, digest verification, and immutable publication
   restart-safe under a tested fail-closed release-state contract.
+- Required the repository immutable-release setting before draft creation and
+  rechecked it immediately before publication.
 
 ## 0.5.1 - 2026-08-24
 

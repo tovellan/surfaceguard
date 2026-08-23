@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 
 import {
+  assertImmutableReleaseSetting,
   assertPublishTarget,
   assertTagContract,
   classifyReleaseState,
   convergeRelease,
+  guardedReleaseMutation,
   selectRelease,
 } from './publish-release.mjs';
 
@@ -128,6 +130,34 @@ assert.throws(
   () => assertPublishTarget({ ...publishable, body: 'changed' }, publishable, contract),
   /changed/u,
 );
+
+assert.doesNotThrow(() => assertImmutableReleaseSetting({ enabled: true }));
+assert.throws(() => assertImmutableReleaseSetting({ enabled: false }), /must be enabled/u);
+
+const disabledMutations = [];
+await assert.rejects(
+  guardedReleaseMutation(
+    () => ({ enabled: false }),
+    () => disabledMutations.push('create'),
+  ),
+  /must be enabled/u,
+);
+assert.deepEqual(disabledMutations, []);
+
+const changingSettings = [{ enabled: true }, { enabled: false }];
+const driftMutations = [];
+await guardedReleaseMutation(
+  () => changingSettings.shift(),
+  () => driftMutations.push('create'),
+);
+await assert.rejects(
+  guardedReleaseMutation(
+    () => changingSettings.shift(),
+    () => driftMutations.push('publish'),
+  ),
+  /must be enabled/u,
+);
+assert.deepEqual(driftMutations, ['create']);
 
 function recoveryDriver(initialRelease, options = {}) {
   let release = initialRelease;
