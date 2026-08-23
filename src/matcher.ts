@@ -70,12 +70,19 @@ function* literalMatches(
   }
 }
 
+function codePointWidthAt(text: string, index: number): number {
+  const codePoint = text.codePointAt(index);
+  return codePoint !== undefined && codePoint > 0xffff ? 2 : 1;
+}
+
 function* regexMatches(text: string, regex: RegExp): Generator<[number, number]> {
   regex.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = regex.exec(text)) !== null) {
     yield [match.index, match[0].length];
-    if (match[0].length === 0) regex.lastIndex += 1;
+    if (match[0].length === 0) {
+      regex.lastIndex += codePointWidthAt(text, regex.lastIndex);
+    }
   }
 }
 
@@ -109,7 +116,8 @@ export function matchPatternRule(
       : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
 
     for (const [start, length] of matches) {
-      const span = rawSpanForMatch(variant, start, Math.max(1, length));
+      const matchLength = length > 0 ? length : codePointWidthAt(variant.text, start);
+      const span = rawSpanForMatch(variant, start, matchLength);
       if (!span) continue;
       const key = `${span.start}:${span.end}`;
       if (seen.has(key)) continue;

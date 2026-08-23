@@ -184,6 +184,44 @@ describe('artifact scanning', () => {
     expect(finding?.location?.offset).toBe(1);
   });
 
+  it('continues matching after an invalid percent-encoded byte', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-invalid-percent-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '%FF%49NTERNAL_ONLY', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: { text: [{ id: 'private-copy', pattern: 'INTERNAL_ONLY' }] },
+      },
+    });
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'private-copy',
+        evidence: '%49NTERNAL_ONLY',
+        transform: 'raw+percent',
+      }),
+    );
+  });
+
+  it('advances zero-width Unicode regex matches by a complete code point', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-zero-width-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), '😀x', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        limits: { maxFindings: 2 },
+        forbidden: {
+          text: [{ id: 'code-point-start', pattern: '(?=.)', match: 'regex' }],
+        },
+      },
+    });
+    expect(result.findings.map((finding) => finding.evidence)).toEqual(['😀', 'x']);
+    expect(result.findings.map((finding) => finding.location?.offset)).toEqual([0, 2]);
+  });
+
   it('rejects adversarial nested-quantifier regular expressions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-regex-'));
     temporary.push(root);
