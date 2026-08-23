@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { lstat, opendir, realpath } from 'node:fs/promises';
 import { isAbsolute, relative, resolve, sep } from 'node:path';
+import { createGunzip } from 'node:zlib';
 
 import { SurfaceGuardError } from './errors.js';
 import { matchesGlob } from './glob.js';
@@ -195,6 +196,63 @@ export async function readFileStreaming(
     );
   }
   return Buffer.concat(chunks).toString('utf8');
+}
+
+export async function readGzipTextStreaming(
+  file: ArtifactFile,
+  maxOutputBytes: number,
+  signal?: AbortSignal,
+): Promise<{ text: string; outputBytes: number }> {
+  if (maxOutputBytes < 1) {
+    throw new SurfaceGuardError(
+      'SG_RESOURCE_LIMIT',
+      'Expanded artifact bytes exceed limit',
+      {
+        artifactPath: file.relativePath,
+        limit: Math.max(0, maxOutputBytes),
+      },
+    );
+  }
+  const chunks: Buffer[] = [];
+  let outputBytes = 0;
+  const source = createReadStream(file.absolutePath, { highWaterMark: 64 * 1024, signal });
+  const gunzip = createGunzip();
+  source.on('error', (error) => gunzip.destroy(error));
+  source.pipe(gunzip);
+  try {
+    for await (const chunk of gunzip) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array);
+      outputBytes += buffer.byteLength;
+      if (outputBytes > maxOutputBytes) {
+        throw new SurfaceGuardError(
+          'SG_RESOURCE_LIMIT',
+          'Expanded gzip artifact exceeds its output limit',
+          {
+            artifactPath: file.relativePath,
+            limit: maxOutputBytes,
+            observed: outputBytes,
+          },
+        );
+      }
+      chunks.push(buffer);
+    }
+  } catch (error) {
+    if (error instanceof SurfaceGuardError) throw error;
+    if (signal?.aborted) {
+      throw new SurfaceGuardError('SG_ABORTED', 'Artifact scan was aborted');
+    }
+    throw new SurfaceGuardError(
+      'SG_IO_ERROR',
+      `Unable to expand gzip artifact: ${file.relativePath}`,
+      {
+        cause: error instanceof Error ? error.message : String(error),
+      },
+    );
+  } finally {
+    source.destroy();
+    gunzip.destroy();
+  }
+  return { text: Buffer.concat(chunks).toString('utf8'), outputBytes };
 }
 
 export function appearsBinary(text: string): boolean {

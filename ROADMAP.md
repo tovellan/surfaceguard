@@ -5,7 +5,6 @@ The roadmap records intended work, not commitments.
 ## Next considerations
 
 - Add adapters for other common artifact layouts.
-- Add optional streaming decompression for gzip sitemap artifacts with strict expansion limits.
 - Add archive inspection with traversal and expansion controls.
 - Extend source-map parsing with bounded inspection of indexed maps.
 - Add policy composition after defining deterministic merge semantics.

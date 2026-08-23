@@ -29,9 +29,9 @@ Reports are sensitive outputs. Exact evidence is necessary for remediation, but 
 - SurfaceGuard does not prove that a deployment contains only the scanned directory.
 - It does not crawl a live site or test access control.
 - It does not inspect application source code.
-- It does not expand archives or compressed assets in version 0.1.0.
+- It expands gzip sitemaps under strict output limits. It does not expand other archives or compressed assets.
 - It does not execute JavaScript or recover dynamically assembled strings.
-- It can miss custom, encrypted, compressed, or novel encodings.
+- It can miss custom, encrypted, unsupported compressed, or novel encodings.
 - It cannot determine whether arbitrary text is private without an explicit policy.
 - A clean scan is not a general security assessment.
 
