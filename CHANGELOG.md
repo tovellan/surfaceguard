@@ -12,6 +12,7 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 - Advanced zero-width regular expression matches by complete Unicode code points.
 - Rejected unsupported compressed sitemaps when a sitemap is required.
 - Aligned file-rule message validation with the published policy schema.
+- Normalized Next.js App Router manifest paths to their public route forms.
 
 ## 0.1.1 - 2026-08-24
 
