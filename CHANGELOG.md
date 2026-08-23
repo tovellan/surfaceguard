@@ -5,6 +5,7 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 ## Unreleased
 
 - Bounded repeated literal and regular expression matching before collecting findings.
+- Enforced the individual file-size limit before artifact classification.
 - Preserved raw evidence spans when artifact text contains astral Unicode characters.
 - Kept case-insensitive literal evidence aligned when Unicode folding changes length.
 - Rejected unsupported compressed sitemaps when a sitemap is required.
