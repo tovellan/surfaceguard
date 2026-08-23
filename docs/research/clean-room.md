@@ -9,6 +9,8 @@ SurfaceGuard was designed independently for pre-deployment inspection of produce
 - [Next.js production browser source maps](https://nextjs.org/docs/pages/api-reference/config/next-config-js/productionBrowserSourceMaps) documents that enabled production browser maps are emitted beside JavaScript and served automatically.
 - [Next.js adapter output types](https://nextjs.org/docs/app/api-reference/adapters/output-types) documents current categories for pages, API routes, app routes, prerenders, static files, and middleware.
 - [Next.js output file tracing](https://nextjs.org/docs/15/app/api-reference/config/next-config-js/output) explains how production dependencies are represented in output tracing files.
+- [Vite HTML features](https://vite.dev/guide/features.html#html) defines HTML entry points and their directly accessible URL paths.
+- [Vite backend integration](https://vite.dev/guide/backend-integration.html) defines the default `.vite/manifest.json` production shape and distinguishes entry chunks from assets and dynamic imports.
 - [GitHub SARIF support](https://docs.github.com/en/code-security/reference/code-scanning/sarif-files/sarif-support) defines the supported SARIF subset, relative artifact locations, and stable fingerprints.
 - [Gitleaks](https://github.com/gitleaks/gitleaks) establishes the maintained secret-scanning category and its directory, Git, and SARIF workflows.
 - [JS Recon](https://github.com/js-recon/js-recon) demonstrates live-site JavaScript enumeration, endpoint extraction, and source-map reconstruction.

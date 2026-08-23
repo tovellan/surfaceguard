@@ -55,7 +55,12 @@ async function run(): Promise<void> {
   const root = input('artifact', true);
   const policyPath = input('policy', true);
   const adapterValue = input('adapter') || 'auto';
-  if (adapterValue !== 'auto' && adapterValue !== 'generic' && adapterValue !== 'nextjs') {
+  if (
+    adapterValue !== 'auto' &&
+    adapterValue !== 'generic' &&
+    adapterValue !== 'nextjs' &&
+    adapterValue !== 'vite'
+  ) {
     throw new SurfaceGuardError(
       'SG_CONFIG_INVALID',
       `Unsupported adapter: ${adapterValue}`,

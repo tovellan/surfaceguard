@@ -1,4 +1,4 @@
-export { genericAdapter, nextjsAdapter, adapters } from './adapters/index.js';
+export { genericAdapter, nextjsAdapter, viteAdapter, adapters } from './adapters/index.js';
 export { VERSION, DEFAULT_LIMITS } from './constants.js';
 export { canonicalizeUrl, decodeTextVariants, repeatedlyDecodeUrl } from './decode.js';
 export { SurfaceGuardError } from './errors.js';

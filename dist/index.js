@@ -222,6 +222,69 @@ var nextjsAdapter = {
   }
 };
 
+// src/adapters/vite.ts
+import { extname as extname2 } from "path";
+var VITE_MANIFEST = ".vite/manifest.json";
+function isHtml(relativePath) {
+  return extname2(relativePath.toLowerCase()) === ".html";
+}
+function routeForHtml(relativePath) {
+  return relativePath === "index.html" ? "/" : `/${relativePath}`;
+}
+function validateManifest(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new TypeError("Manifest root must be an object");
+  }
+  for (const chunk of Object.values(value)) {
+    if (!chunk || typeof chunk !== "object" || Array.isArray(chunk)) {
+      throw new TypeError("Manifest chunks must be objects");
+    }
+    const output = chunk.file;
+    if (typeof output !== "string" || output.length === 0) {
+      throw new TypeError("Manifest chunks must name an output file");
+    }
+  }
+}
+var viteAdapter = {
+  name: "vite",
+  detect(files) {
+    return files.reduce((score, file) => {
+      if (file.relativePath === VITE_MANIFEST) return score + 20;
+      if (isHtml(file.relativePath)) return score + 3;
+      if (file.relativePath.startsWith("assets/")) return score + 1;
+      return score;
+    }, 0);
+  },
+  classify(relativePath) {
+    if (relativePath === VITE_MANIFEST || isHtml(relativePath)) return "metadata";
+    return classifyGeneric(relativePath);
+  },
+  async collectRoutes(context) {
+    const routes = context.files.filter((file) => isHtml(file.relativePath)).map((file) => ({
+      route: routeForHtml(file.relativePath),
+      artifactPath: file.relativePath,
+      pointer: "/"
+    }));
+    const findings = [];
+    const manifest = context.files.find((file) => file.relativePath === VITE_MANIFEST);
+    if (manifest) {
+      try {
+        validateManifest(JSON.parse(await context.readText(manifest)));
+      } catch (error) {
+        findings.push({
+          ruleId: "SG1004",
+          severity: "error",
+          category: "route",
+          artifactPath: manifest.relativePath,
+          message: "Vite manifest is malformed or unreadable",
+          evidence: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    return { routes, findings };
+  }
+};
+
 // src/errors.ts
 var SurfaceGuardError = class extends Error {
   code;
@@ -243,7 +306,11 @@ var SurfaceGuardError = class extends Error {
 };
 
 // src/adapters/index.ts
-var adapters = [nextjsAdapter, genericAdapter];
+var adapters = [
+  nextjsAdapter,
+  viteAdapter,
+  genericAdapter
+];
 function selectAdapter(requested, files) {
   if (requested !== "auto") {
     const exact = adapters.find((adapter) => adapter.name === requested);
@@ -441,7 +508,7 @@ function matchesGlob(value, glob) {
 import { readFile } from "fs/promises";
 import { resolve } from "path";
 var SEVERITIES = /* @__PURE__ */ new Set(["error", "warning", "note"]);
-var ADAPTERS = /* @__PURE__ */ new Set(["auto", "generic", "nextjs"]);
+var ADAPTERS = /* @__PURE__ */ new Set(["auto", "generic", "nextjs", "vite"]);
 var SCOPES = /* @__PURE__ */ new Set([
   "all",
   "route-manifest",
@@ -610,7 +677,7 @@ function validatePolicy(value) {
   if (root.adapter !== void 0 && (typeof root.adapter !== "string" || !ADAPTERS.has(root.adapter))) {
     throw new SurfaceGuardError(
       "SG_CONFIG_INVALID",
-      "adapter must be auto, generic, or nextjs",
+      "adapter must be auto, generic, nextjs, or vite",
       {
         path: "$.adapter"
       }
@@ -1478,5 +1545,6 @@ export {
   resolveLimits,
   scanArtifacts,
   toSarif,
-  validatePolicy
+  validatePolicy,
+  viteAdapter
 };

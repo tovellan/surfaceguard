@@ -18,7 +18,7 @@ interface FileRule {
 }
 interface SurfaceGuardPolicyV1 {
     schemaVersion: 1;
-    adapter?: 'auto' | 'generic' | 'nextjs';
+    adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
     failOn?: Severity;
     exclude?: string[];
     routes?: {
@@ -101,7 +101,7 @@ interface ScanResult {
 interface ScanOptions {
     root: string;
     policy: SurfaceGuardPolicy;
-    adapter?: 'auto' | 'generic' | 'nextjs';
+    adapter?: 'auto' | 'generic' | 'nextjs' | 'vite';
     signal?: AbortSignal;
 }
 interface AdapterContext {
@@ -122,6 +122,8 @@ interface FrameworkAdapter {
 declare const genericAdapter: FrameworkAdapter;
 
 declare const nextjsAdapter: FrameworkAdapter;
+
+declare const viteAdapter: FrameworkAdapter;
 
 declare const adapters: readonly FrameworkAdapter[];
 
@@ -165,4 +167,4 @@ declare function renderSarif(result: ScanResult): string;
 
 declare function scanArtifacts(input: ScanOptions): Promise<ScanResult>;
 
-export { type AdapterContext, type ArtifactFile, type ArtifactKind, DEFAULT_LIMITS, type FileRule, type Finding, type FrameworkAdapter, type PatternRule, type RouteEvidence, type ScanLimits, type ScanOptions, type ScanResult, type Severity, SurfaceGuardError, type SurfaceGuardPolicy, type SurfaceGuardPolicyV1, VERSION, adapters, canonicalizeUrl, decodeTextVariants, genericAdapter, globToRegExp, loadPolicy, matchesGlob, nextjsAdapter, renderJson, renderMarkdown, renderSarif, repeatedlyDecodeUrl, resolveLimits, scanArtifacts, toSarif, validatePolicy };
+export { type AdapterContext, type ArtifactFile, type ArtifactKind, DEFAULT_LIMITS, type FileRule, type Finding, type FrameworkAdapter, type PatternRule, type RouteEvidence, type ScanLimits, type ScanOptions, type ScanResult, type Severity, SurfaceGuardError, type SurfaceGuardPolicy, type SurfaceGuardPolicyV1, VERSION, adapters, canonicalizeUrl, decodeTextVariants, genericAdapter, globToRegExp, loadPolicy, matchesGlob, nextjsAdapter, renderJson, renderMarkdown, renderSarif, repeatedlyDecodeUrl, resolveLimits, scanArtifacts, toSarif, validatePolicy, viteAdapter };

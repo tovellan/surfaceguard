@@ -9,7 +9,7 @@ inputs:
     description: Path to a SurfaceGuard policy file
     required: true
   adapter:
-    description: 'Adapter override: auto, generic, or nextjs'
+    description: 'Adapter override: auto, generic, nextjs, or vite'
     required: false
     default: auto
   sarif:
