@@ -125,7 +125,7 @@ declare const nextjsAdapter: FrameworkAdapter;
 
 declare const adapters: readonly FrameworkAdapter[];
 
-declare const VERSION = "0.1.0";
+declare const VERSION = "0.1.1";
 declare const DEFAULT_LIMITS: Readonly<ScanLimits>;
 
 interface SourceSpan {
