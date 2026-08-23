@@ -289,24 +289,41 @@ describe('artifact scanning', () => {
     );
   });
 
-  it('inspects gzip sitemaps within the configured expansion limit', async () => {
-    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-sitemap-'));
+  it.each(['sitemap.xml.gz', 'sitemap_index.xml.gz', 'sitemap1.xml.gz'])(
+    'inspects gzip sitemap %s within the configured expansion limit',
+    async (filename) => {
+      const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-sitemap-'));
+      temporary.push(root);
+      await writeFile(
+        join(root, filename),
+        gzipSync('<urlset><url><loc>https://example.test/private</loc></url></urlset>'),
+      );
+      const result = await scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          routes: { deny: ['/private'] },
+          sitemap: { mode: 'required', forbidDisallowedRoutes: true },
+        },
+      });
+      expect(result.findings).toContainEqual(
+        expect.objectContaining({ ruleId: 'SG4004', evidence: '/private' }),
+      );
+    },
+  );
+
+  it('keeps unsupported gzip XML names outside sitemap handling', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-lookalike-'));
     temporary.push(root);
     await writeFile(
-      join(root, 'sitemap.xml.gz'),
+      join(root, 'sitemapping.xml.gz'),
       gzipSync('<urlset><url><loc>https://example.test/private</loc></url></urlset>'),
     );
     const result = await scanArtifacts({
       root,
-      policy: {
-        schemaVersion: 1,
-        routes: { deny: ['/private'] },
-        sitemap: { mode: 'required', forbidDisallowedRoutes: true },
-      },
+      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
     });
-    expect(result.findings).toContainEqual(
-      expect.objectContaining({ ruleId: 'SG4004', evidence: '/private' }),
-    );
+    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG4001' }));
   });
 
   it('rejects gzip sitemap expansion beyond maxFileBytes', async () => {

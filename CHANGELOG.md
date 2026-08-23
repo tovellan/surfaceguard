@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. The project follows Semantic Versioning.
 
+## Unreleased
+
+- Recognized common numbered and index gzip sitemap filenames.
+
 ## 0.4.0 - 2026-08-24
 
 - Added streaming gzip sitemap expansion bounded by file and total-byte limits.

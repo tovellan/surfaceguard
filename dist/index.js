@@ -1,12 +1,13 @@
 // src/adapters/generic.ts
 import { basename, extname } from "path";
 var ROUTE_KEYS = /* @__PURE__ */ new Set(["page", "path", "pathname", "route"]);
+var SITEMAP_FILENAME = /^sitemap(?:(?:[_-]?index)|(?:[_-]?\d+)|(?:-[^/]*))?\.xml(?:\.gz)?$/u;
 function classifyGeneric(relativePath) {
   const lower = relativePath.toLowerCase();
   const name = basename(lower);
   const extension = extname(lower);
   if (name === "robots.txt") return "robots";
-  if (/^sitemap(?:-[^/]*)?\.xml(?:\.gz)?$/u.test(name)) return "sitemap";
+  if (SITEMAP_FILENAME.test(name)) return "sitemap";
   if (name.endsWith(".map") || name.endsWith(".map.json")) return "source-map";
   if (name.includes("routes-manifest") || name.includes("route-manifest") || name === "pages-manifest.json" || name === "app-paths-manifest.json" || name === "prerender-manifest.json") {
     return "route-manifest";

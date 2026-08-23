@@ -19,6 +19,7 @@ SurfaceGuard scans produced web artifacts against a versioned policy. It must re
 - This is an intentionally public open-source repository with public releases. Do not change its visibility without explicit user direction.
 - Use synthetic fixtures only. Never commit production artifacts, source maps, credentials, customer data, private route names, personal data, or personal names.
 - Do not add Unicode en dash or em dash characters to tracked text.
+- Configure both the commit author and committer as `Tovellan <tovellan@users.noreply.github.com>`.
 - Do not add authorship, co-author, generator, or sign-off trailers. The configured Git identity is the sole author.
 - Do not weaken symlink containment, resource limits, evidence mapping, or deterministic ordering.
 - Keep package contents restricted by the `files` allow list in `package.json`.

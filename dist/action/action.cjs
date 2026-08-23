@@ -418,12 +418,13 @@ var import_node_path6 = require("path");
 // src/adapters/generic.ts
 var import_node_path2 = require("path");
 var ROUTE_KEYS = /* @__PURE__ */ new Set(["page", "path", "pathname", "route"]);
+var SITEMAP_FILENAME = /^sitemap(?:(?:[_-]?index)|(?:[_-]?\d+)|(?:-[^/]*))?\.xml(?:\.gz)?$/u;
 function classifyGeneric(relativePath) {
   const lower = relativePath.toLowerCase();
   const name = (0, import_node_path2.basename)(lower);
   const extension = (0, import_node_path2.extname)(lower);
   if (name === "robots.txt") return "robots";
-  if (/^sitemap(?:-[^/]*)?\.xml(?:\.gz)?$/u.test(name)) return "sitemap";
+  if (SITEMAP_FILENAME.test(name)) return "sitemap";
   if (name.endsWith(".map") || name.endsWith(".map.json")) return "source-map";
   if (name.includes("routes-manifest") || name.includes("route-manifest") || name === "pages-manifest.json" || name === "app-paths-manifest.json" || name === "prerender-manifest.json") {
     return "route-manifest";

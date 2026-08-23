@@ -39,4 +39,4 @@ The full release gate creates a package tarball in a temporary directory, instal
 - Preserve relative paths and bounded resource use in reports.
 - Update `CHANGELOG.md` for user-visible changes.
 
-All commits require review and passing CI. Use the configured Git identity as the sole author. Do not add authorship, co-author, generator, or sign-off trailers.
+All commits require review and passing CI. Configure both the author and committer as the generic organization identity `Tovellan <tovellan@users.noreply.github.com>`. Use that identity as the sole author, and do not add authorship, co-author, generator, or sign-off trailers.
