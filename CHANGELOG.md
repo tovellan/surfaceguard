@@ -19,6 +19,9 @@ All notable changes are recorded here. The project follows Semantic Versioning.
   permissions and no persisted Git credential.
 - Required release dispatches to run from the protected main workflow and resolve an
   exact annotated semantic-version tag at the current main commit.
+- Required the generic public tagger identity and an exact attribution-free tag message.
+- Made draft creation, asset upload, digest verification, and immutable publication
+  restart-safe under a tested fail-closed release-state contract.
 
 ## 0.5.1 - 2026-08-24
 

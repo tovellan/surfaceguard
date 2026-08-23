@@ -45,6 +45,7 @@
     "lint": "eslint . --max-warnings 0",
     "typecheck": "tsc --noEmit",
     "test": "vitest run --coverage",
+    "test:release": "node scripts/test-release-publish.mjs",
     "test:watch": "vitest",
     "bench": "vitest bench --run",
     "check:text": "node scripts/check-text.mjs",
@@ -53,7 +54,7 @@
     "check:secrets": "node scripts/secret-scan.mjs",
     "test:integration": "node scripts/clean-install.mjs",
     "release:gate": "npm run check && npm run check:licenses && npm audit --audit-level=high && npm run check:secrets && npm run test:integration",
-    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run check:text && npm run check:boundary",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run test:release && npm run build && npm run check:text && npm run check:boundary",
     "prepack": "npm run clean && npm run build"
   },
   "devDependencies": {

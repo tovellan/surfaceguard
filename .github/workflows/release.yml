@@ -16,10 +16,18 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-${{ inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   build:
     if: ${{ inputs.confirm && github.ref == 'refs/heads/main' }}
     runs-on: ubuntu-latest
+    outputs:
+      publish_script_sha256: ${{ steps.publish-script.outputs.sha256 }}
+      release_commit: ${{ steps.trusted-release.outputs.commit }}
+      tag_object: ${{ steps.trusted-release.outputs.tag_object }}
     steps:
       - name: Check out the trusted release workflow ref
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -41,20 +49,30 @@ jobs:
           git fetch --no-tags origin "$tag_ref:$tag_ref"
           git show-ref --verify --quiet "$tag_ref"
           test "$(git cat-file -t "$tag_ref")" = tag
+          tag_object=$(git rev-parse "$tag_ref")
           tag_payload=$(git cat-file tag "$tag_ref")
+          test "$(git cat-file -s "$tag_ref")" -eq "$(printf '%s\n' "$tag_payload" | wc -c | tr -d ' ')"
           tag_target=$(printf '%s\n' "$tag_payload" | sed -n '1s/^object //p')
           test "$(printf '%s\n' "$tag_payload" | sed -n '2s/^type //p')" = commit
           test "$(printf '%s\n' "$tag_payload" | sed -n '3s/^tag //p')" = "$RELEASE_TAG"
+          printf '%s\n' "$tag_payload" | sed -n '4p' | grep -Eq '^tagger Tovellan <tovellan@users\.noreply\.github\.com> [0-9]+ [+-][0-9]{4}$'
+          test -z "$(printf '%s\n' "$tag_payload" | sed -n '5p')"
+          tag_message=$(printf '%s\n' "$tag_payload" | sed '1,/^$/d')
+          test "$tag_message" = "SurfaceGuard $RELEASE_TAG"
           release_commit=$(git rev-parse "$tag_ref^{commit}")
           test "$tag_target" = "$release_commit"
           test "$release_commit" = "$GITHUB_SHA"
           echo "commit=$release_commit" >> "$GITHUB_OUTPUT"
+          echo "tag_object=$tag_object" >> "$GITHUB_OUTPUT"
       - name: Check out the exact tag commit
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ steps.trusted-release.outputs.commit }}
           fetch-depth: 0
           persist-credentials: false
+      - name: Pin the dependency-free publish program
+        id: publish-script
+        run: echo "sha256=$(sha256sum scripts/publish-release.mjs | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -73,6 +91,7 @@ jobs:
           mkdir release-assets
           npm pack --pack-destination release-assets
           cp ".github/release-notes/${RELEASE_TAG}.md" release-assets/release-notes.md
+          cp scripts/publish-release.mjs release-assets/release-publish.mjs
       - name: Transfer verified release files
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -96,13 +115,12 @@ jobs:
           path: release-assets
       - name: Stage and publish GitHub release
         env:
+          EXPECTED_RELEASE_COMMIT: ${{ needs.build.outputs.release_commit }}
+          EXPECTED_TAG_OBJECT: ${{ needs.build.outputs.tag_object }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_TAG: ${{ inputs.tag }}
         run: |
           set -euo pipefail
-          shopt -s nullglob
-          archives=(release-assets/*.tgz)
-          test "${#archives[@]}" -eq 1
-          test -f release-assets/release-notes.md
-          gh release create "$RELEASE_TAG" "${archives[0]}" --draft --verify-tag --title "SurfaceGuard $RELEASE_TAG" --notes-file release-assets/release-notes.md
-          gh release edit "$RELEASE_TAG" --draft=false --verify-tag
+          actual=$(sha256sum release-assets/release-publish.mjs | cut -d' ' -f1)
+          test "$actual" = "${{ needs.build.outputs.publish_script_sha256 }}"
+          node release-assets/release-publish.mjs release-assets
