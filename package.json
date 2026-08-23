@@ -1,0 +1,77 @@
+{
+  "name": "@tovellan/surfaceguard",
+  "version": "0.1.0",
+  "description": "Policy-driven scanner for public web build artifacts",
+  "type": "module",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tovellan/surfaceguard.git"
+  },
+  "homepage": "https://github.com/tovellan/surfaceguard#readme",
+  "bugs": {
+    "url": "https://github.com/tovellan/surfaceguard/issues"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "surfaceguard": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./policy-schema": "./schemas/policy-v1.schema.json"
+  },
+  "files": [
+    "action.yml",
+    "dist",
+    "schemas",
+    "LICENSE",
+    "NOTICE",
+    "README.md",
+    "SECURITY.md"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "clean": "node scripts/clean.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "eslint . --max-warnings 0",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --coverage",
+    "test:watch": "vitest",
+    "bench": "vitest bench --run",
+    "check:text": "node scripts/check-text.mjs",
+    "check:boundary": "node scripts/check-public-boundary.mjs",
+    "check:licenses": "node scripts/check-licenses.mjs",
+    "check:secrets": "node scripts/secret-scan.mjs",
+    "test:integration": "node scripts/clean-install.mjs",
+    "release:gate": "npm run check && npm run check:licenses && npm audit --audit-level=high && npm run check:secrets && npm run test:integration",
+    "check": "npm run format:check && npm run lint && npm run typecheck && npm run test && npm run build && npm run check:text && npm run check:boundary",
+    "prepack": "npm run clean && npm run build"
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "@types/node": "^24.10.0",
+    "@vitest/coverage-v8": "^4.1.11",
+    "eslint": "^10.0.0",
+    "fast-check": "^4.9.0",
+    "prettier": "^3.9.0",
+    "tsup": "^8.5.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.67.0",
+    "vitest": "^4.1.11"
+  },
+  "overrides": {
+    "esbuild": "0.28.2"
+  },
+  "keywords": [
+    "artifact-security",
+    "nextjs",
+    "sarif",
+    "security-scanner"
+  ]
+}

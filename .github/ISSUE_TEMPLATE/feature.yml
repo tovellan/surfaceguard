@@ -1,0 +1,25 @@
+name: Feature proposal
+description: Propose a scoped detection, adapter, or report change
+title: 'proposal: '
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Artifact verification problem
+      description: Describe the produced artifact and failure mode.
+    validations:
+      required: true
+  - type: textarea
+    id: policy
+    attributes:
+      label: Proposed deterministic behavior
+      description: Explain evidence, limits, false positives, and false negatives.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+    validations:
+      required: true

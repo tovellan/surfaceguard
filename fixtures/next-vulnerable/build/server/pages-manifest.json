@@ -1,0 +1,5 @@
+{
+  "/": "pages/index.js",
+  "/docs": "pages/docs.js",
+  "/staff/console": "pages/staff.js"
+}

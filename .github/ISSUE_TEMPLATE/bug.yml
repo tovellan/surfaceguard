@@ -1,0 +1,46 @@
+name: Bug report
+description: Report incorrect or unstable scanner behavior with synthetic evidence
+title: 'bug: '
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach private production artifacts. Use a minimal synthetic reproduction.
+  - type: input
+    id: version
+    attributes:
+      label: SurfaceGuard version
+    validations:
+      required: true
+  - type: input
+    id: runtime
+    attributes:
+      label: Node.js and operating system versions
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Synthetic reproduction
+      description: Include the command, reduced policy, and minimal artifact layout.
+    validations:
+      required: true
+  - type: textarea
+    id: observed
+    attributes:
+      label: Observed result
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Data safety
+      options:
+        - label: This report contains only synthetic data and no credentials.
+          required: true
