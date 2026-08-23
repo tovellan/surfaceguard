@@ -31,6 +31,31 @@ describe('artifact scanning', () => {
     expect(result.statistics.routesFound).toBe(3);
   });
 
+  it('auto-detects Vite and evaluates produced HTML routes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-vite-'));
+    temporary.push(root);
+    await mkdir(join(root, '.vite'));
+    await writeFile(join(root, 'index.html'), '<main>Home</main>', 'utf8');
+    await writeFile(join(root, 'admin.html'), '<main>Admin</main>', 'utf8');
+    await writeFile(
+      join(root, '.vite/manifest.json'),
+      JSON.stringify({ 'src/main.ts': { file: 'assets/main.js', isEntry: true } }),
+      'utf8',
+    );
+    const result = await scanArtifacts({
+      root,
+      policy: { schemaVersion: 1, routes: { deny: ['/admin.html'] } },
+    });
+    expect(result.adapter).toBe('vite');
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({
+        ruleId: 'SG2002',
+        artifactPath: 'admin.html',
+        evidence: '/admin.html',
+      }),
+    );
+  });
+
   it('explains every vulnerable fixture class', async () => {
     const policy = await loadPolicy(join(project, 'fixtures/policy.json'));
     const result = await scanArtifacts({
