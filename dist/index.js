@@ -293,7 +293,7 @@ function decodePercent(input) {
       decoded = new TextDecoder("utf-8", { fatal: true }).decode(Uint8Array.from(bytes));
     } catch {
       output += input.text[index] ?? "";
-      const span = input.spans[index];
+      const span = sourceSpanAt(input, index);
       if (span) spans.push(span);
       continue;
     }
@@ -1039,12 +1039,18 @@ function* literalMatches(text, pattern, caseSensitive) {
     offset = index + Math.max(1, pattern.length);
   }
 }
+function codePointWidthAt(text, index) {
+  const codePoint = text.codePointAt(index);
+  return codePoint !== void 0 && codePoint > 65535 ? 2 : 1;
+}
 function* regexMatches(text, regex) {
   regex.lastIndex = 0;
   let match;
   while ((match = regex.exec(text)) !== null) {
     yield [match.index, match[0].length];
-    if (match[0].length === 0) regex.lastIndex += 1;
+    if (match[0].length === 0) {
+      regex.lastIndex += codePointWidthAt(text, regex.lastIndex);
+    }
   }
 }
 function matchPatternRule(raw, file, rule, category, limits) {
@@ -1066,7 +1072,8 @@ function matchPatternRule(raw, file, rule, category, limits) {
   for (const variant of variants) {
     const matches = regex ? regexMatches(variant.text, regex) : literalMatches(variant.text, rule.pattern, rule.caseSensitive !== false);
     for (const [start, length] of matches) {
-      const span = rawSpanForMatch(variant, start, Math.max(1, length));
+      const matchLength = length > 0 ? length : codePointWidthAt(variant.text, start);
+      const span = rawSpanForMatch(variant, start, matchLength);
       if (!span) continue;
       const key = `${span.start}:${span.end}`;
       if (seen.has(key)) continue;
