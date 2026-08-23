@@ -5,7 +5,7 @@ import { writeFile } from "fs/promises";
 import { resolve as resolve3 } from "path";
 
 // src/constants.ts
-var VERSION = "0.5.1";
+var VERSION = "0.5.2";
 var DEFAULT_LIMITS = Object.freeze({
   maxEntries: 1e5,
   maxDirectories: 1e4,

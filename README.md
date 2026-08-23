@@ -10,7 +10,7 @@ sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
 SurfaceGuard is not published to npm. Install a released version directly from GitHub:
 
 ```sh
-npm install --save-dev github:tovellan/surfaceguard#v0.5.1
+npm install --save-dev github:tovellan/surfaceguard#v0.5.2
 ```
 
 Node.js 20 or newer is required.
@@ -101,7 +101,7 @@ The action scans an artifact after the application build. Pin a release tag or, 
   run: npm run build
 
 - name: Scan public artifacts
-  uses: tovellan/surfaceguard@v0.5.1
+  uses: tovellan/surfaceguard@v0.5.2
   with:
     artifact: .next
     policy: surfaceguard.policy.json

@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from 'node:child_process';
-import { copyFile, cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, copyFile, cp, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 
@@ -29,6 +29,15 @@ try {
   if (!packed) throw new Error('npm pack did not create an archive');
   const archive = join(temporary, basename(packed));
   run('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', archive]);
+  const installedRoot = join(temporary, 'node_modules', '@tovellan', 'surfaceguard');
+  const installedReadme = await readFile(join(installedRoot, 'README.md'), 'utf8');
+  const relativeLinks = [...installedReadme.matchAll(/\]\((?!https?:|#)([^)]+)\)/gu)].map(
+    (match) => match[1],
+  );
+  for (const relativeLink of relativeLinks) {
+    if (!relativeLink) continue;
+    await access(join(installedRoot, relativeLink));
+  }
   await cp(join(project, 'fixtures'), join(temporary, 'fixtures'), { recursive: true });
   await copyFile(join(project, 'examples/library.mjs'), join(temporary, 'library.mjs'));
 

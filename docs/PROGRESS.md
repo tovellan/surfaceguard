@@ -10,3 +10,5 @@
 - 2026-08-24: Prepared version 0.5.1 with canonical URL, sitemap/robots, adapter,
   policy-validation, unknown-artifact, and bounded-output hardening after an independent
   adversarial review.
+- 2026-08-24: Prepared version 0.5.2 with offline-valid packaged documentation links and
+  an install-time regression assertion for every relative README target.

@@ -163,7 +163,7 @@ declare const viteAdapter: FrameworkAdapter;
 
 declare const adapters: readonly FrameworkAdapter[];
 
-declare const VERSION = "0.5.1";
+declare const VERSION = "0.5.2";
 declare const DEFAULT_LIMITS: Readonly<ScanLimits>;
 
 interface SourceSpan {

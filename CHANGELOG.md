@@ -4,6 +4,11 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 
 ## Unreleased
 
+## 0.5.2 - 2026-08-24
+
+- Included every repository document linked from the packaged README and verified those
+  relative links during clean-install testing.
+
 ## 0.5.1 - 2026-08-24
 
 - Rejected ambiguous automatic adapter signals and recognized the current Next.js App Router route manifest.
