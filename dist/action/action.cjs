@@ -423,7 +423,7 @@ function classifyGeneric(relativePath) {
   const name = (0, import_node_path2.basename)(lower);
   const extension = (0, import_node_path2.extname)(lower);
   if (name === "robots.txt") return "robots";
-  if (/^sitemap(?:-[^/]*)?\.xml$/u.test(name)) return "sitemap";
+  if (/^sitemap(?:-[^/]*)?\.xml(?:\.gz)?$/u.test(name)) return "sitemap";
   if (name.endsWith(".map") || name.endsWith(".map.json")) return "source-map";
   if (name.includes("routes-manifest") || name.includes("route-manifest") || name === "pages-manifest.json" || name === "app-paths-manifest.json" || name === "prerender-manifest.json") {
     return "route-manifest";
@@ -852,6 +852,7 @@ function canonicalizeUrl(value, maxPasses = 3) {
 var import_node_fs = require("fs");
 var import_promises2 = require("fs/promises");
 var import_node_path5 = require("path");
+var import_node_zlib = require("zlib");
 
 // src/glob.ts
 var REGEX_SPECIAL = /* @__PURE__ */ new Set(["\\", "^", "$", ".", "+", "(", ")", "|", "{", "}"]);
@@ -1063,6 +1064,58 @@ async function readFileStreaming(file, limits, signal) {
     );
   }
   return Buffer.concat(chunks).toString("utf8");
+}
+async function readGzipTextStreaming(file, maxOutputBytes, signal) {
+  if (maxOutputBytes < 1) {
+    throw new SurfaceGuardError(
+      "SG_RESOURCE_LIMIT",
+      "Expanded artifact bytes exceed limit",
+      {
+        artifactPath: file.relativePath,
+        limit: Math.max(0, maxOutputBytes)
+      }
+    );
+  }
+  const chunks = [];
+  let outputBytes = 0;
+  const source = (0, import_node_fs.createReadStream)(file.absolutePath, { highWaterMark: 64 * 1024, signal });
+  const gunzip = (0, import_node_zlib.createGunzip)();
+  source.on("error", (error) => gunzip.destroy(error));
+  source.pipe(gunzip);
+  try {
+    for await (const chunk of gunzip) {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      outputBytes += buffer.byteLength;
+      if (outputBytes > maxOutputBytes) {
+        throw new SurfaceGuardError(
+          "SG_RESOURCE_LIMIT",
+          "Expanded gzip artifact exceeds its output limit",
+          {
+            artifactPath: file.relativePath,
+            limit: maxOutputBytes,
+            observed: outputBytes
+          }
+        );
+      }
+      chunks.push(buffer);
+    }
+  } catch (error) {
+    if (error instanceof SurfaceGuardError) throw error;
+    if (signal?.aborted) {
+      throw new SurfaceGuardError("SG_ABORTED", "Artifact scan was aborted");
+    }
+    throw new SurfaceGuardError(
+      "SG_IO_ERROR",
+      `Unable to expand gzip artifact: ${file.relativePath}`,
+      {
+        cause: error instanceof Error ? error.message : String(error)
+      }
+    );
+  } finally {
+    source.destroy();
+    gunzip.destroy();
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), outputBytes };
 }
 function appearsBinary(text) {
   const sample = text.slice(0, 8192);
@@ -1404,10 +1457,23 @@ async function scanArtifacts(input2) {
   for (const file of discovered.files)
     file.kind = adapter.classify(file.relativePath) ?? "unknown";
   const texts = /* @__PURE__ */ new Map();
+  let expandedBytes = 0;
   const readText = async (file) => {
     const cached = texts.get(file.relativePath);
     if (cached !== void 0) return cached;
-    const text = await readFileStreaming(file, limits, input2.signal);
+    let text;
+    if (file.kind === "sitemap" && file.relativePath.toLowerCase().endsWith(".gz")) {
+      const remaining = limits.maxTotalBytes - expandedBytes;
+      const expanded = await readGzipTextStreaming(
+        file,
+        Math.min(limits.maxFileBytes, remaining),
+        input2.signal
+      );
+      text = expanded.text;
+      expandedBytes += expanded.outputBytes;
+    } else {
+      text = await readFileStreaming(file, limits, input2.signal);
+    }
     texts.set(file.relativePath, text);
     return text;
   };

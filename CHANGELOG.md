@@ -2,6 +2,10 @@
 
 All notable changes are recorded here. The project follows Semantic Versioning.
 
+## Unreleased
+
+- Added streaming gzip sitemap expansion bounded by file and total-byte limits.
+
 ## 0.3.0 - 2026-08-24
 
 - Added a Vite adapter for default build manifests and produced HTML entry routes.

@@ -1,6 +1,7 @@
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 import { afterEach, describe, expect, it } from 'vitest';
 
@@ -288,15 +289,70 @@ describe('artifact scanning', () => {
     );
   });
 
-  it('does not treat an unsupported compressed sitemap as an inspected sitemap', async () => {
+  it('inspects gzip sitemaps within the configured expansion limit', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-sitemap-'));
     temporary.push(root);
-    await writeFile(join(root, 'sitemap.xml.gz'), Buffer.from([31, 139, 8, 0]));
+    await writeFile(
+      join(root, 'sitemap.xml.gz'),
+      gzipSync('<urlset><url><loc>https://example.test/private</loc></url></urlset>'),
+    );
     const result = await scanArtifacts({
       root,
-      policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+      policy: {
+        schemaVersion: 1,
+        routes: { deny: ['/private'] },
+        sitemap: { mode: 'required', forbidDisallowedRoutes: true },
+      },
     });
-    expect(result.findings).toContainEqual(expect.objectContaining({ ruleId: 'SG4001' }));
+    expect(result.findings).toContainEqual(
+      expect.objectContaining({ ruleId: 'SG4004', evidence: '/private' }),
+    );
+  });
+
+  it('rejects gzip sitemap expansion beyond maxFileBytes', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-limit-'));
+    temporary.push(root);
+    await writeFile(join(root, 'sitemap.xml.gz'), gzipSync('x'.repeat(1_024)));
+    await expect(
+      scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          sitemap: { mode: 'required' },
+          limits: { maxFileBytes: 128 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SG_RESOURCE_LIMIT' });
+  });
+
+  it('bounds total expanded bytes across gzip sitemaps', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-total-'));
+    temporary.push(root);
+    const compressed = gzipSync(`<urlset>${' '.repeat(80)}</urlset>`);
+    await writeFile(join(root, 'sitemap-a.xml.gz'), compressed);
+    await writeFile(join(root, 'sitemap-b.xml.gz'), compressed);
+    await expect(
+      scanArtifacts({
+        root,
+        policy: {
+          schemaVersion: 1,
+          sitemap: { mode: 'required' },
+          limits: { maxFileBytes: 128, maxTotalBytes: 150 },
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'SG_RESOURCE_LIMIT' });
+  });
+
+  it('reports malformed gzip input as an I/O error', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-gzip-malformed-'));
+    temporary.push(root);
+    await writeFile(join(root, 'sitemap.xml.gz'), Buffer.from([31, 139, 8, 0]));
+    await expect(
+      scanArtifacts({
+        root,
+        policy: { schemaVersion: 1, sitemap: { mode: 'required' } },
+      }),
+    ).rejects.toMatchObject({ code: 'SG_IO_ERROR' });
   });
 
   it('streams fixture text without changing its bytes', async () => {

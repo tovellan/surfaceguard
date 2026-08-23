@@ -24,4 +24,4 @@ App Router paths are normalized before policy evaluation. Route groups and paral
 
 The Vite adapter recognizes the default `.vite/manifest.json` build manifest and produced HTML entry points. HTML route evidence preserves Vite's output path contract: `index.html` maps to `/`, while other HTML files retain their relative filename under a leading slash. Manifest source keys and asset filenames are not treated as public routes.
 
-Compressed sitemaps and archives are not expanded. A compressed sitemap does not satisfy a required sitemap policy.
+Gzip sitemaps are expanded while streaming under the configured file and total-byte limits. Other compressed assets and archives are not expanded.

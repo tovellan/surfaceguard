@@ -15,7 +15,7 @@ export function classifyGeneric(relativePath: string): ArtifactKind {
   const name = basename(lower);
   const extension = extname(lower);
   if (name === 'robots.txt') return 'robots';
-  if (/^sitemap(?:-[^/]*)?\.xml$/u.test(name)) return 'sitemap';
+  if (/^sitemap(?:-[^/]*)?\.xml(?:\.gz)?$/u.test(name)) return 'sitemap';
   if (name.endsWith('.map') || name.endsWith('.map.json')) return 'source-map';
   if (
     name.includes('routes-manifest') ||

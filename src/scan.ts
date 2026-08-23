@@ -3,7 +3,12 @@ import { basename } from 'node:path';
 import { selectAdapter } from './adapters/index.js';
 import { canonicalizeUrl } from './decode.js';
 import { SurfaceGuardError } from './errors.js';
-import { appearsBinary, discoverFiles, readFileStreaming } from './filesystem.js';
+import {
+  appearsBinary,
+  discoverFiles,
+  readFileStreaming,
+  readGzipTextStreaming,
+} from './filesystem.js';
 import { matchesGlob } from './glob.js';
 import { matchPatternRule } from './matcher.js';
 import { resolveLimits, validatePolicy } from './policy.js';
@@ -215,10 +220,23 @@ export async function scanArtifacts(input: ScanOptions): Promise<ScanResult> {
     file.kind = adapter.classify(file.relativePath) ?? 'unknown';
 
   const texts = new Map<string, string>();
+  let expandedBytes = 0;
   const readText = async (file: ArtifactFile): Promise<string> => {
     const cached = texts.get(file.relativePath);
     if (cached !== undefined) return cached;
-    const text = await readFileStreaming(file, limits, input.signal);
+    let text: string;
+    if (file.kind === 'sitemap' && file.relativePath.toLowerCase().endsWith('.gz')) {
+      const remaining = limits.maxTotalBytes - expandedBytes;
+      const expanded = await readGzipTextStreaming(
+        file,
+        Math.min(limits.maxFileBytes, remaining),
+        input.signal,
+      );
+      text = expanded.text;
+      expandedBytes += expanded.outputBytes;
+    } else {
+      text = await readFileStreaming(file, limits, input.signal);
+    }
     texts.set(file.relativePath, text);
     return text;
   };

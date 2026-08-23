@@ -19,7 +19,7 @@ describe('framework adapters', () => {
   it.each([
     ['robots.txt', 'robots'],
     ['sitemap.xml', 'sitemap'],
-    ['sitemap.xml.gz', 'unknown'],
+    ['sitemap.xml.gz', 'sitemap'],
     ['static/app.js.map', 'source-map'],
     ['routes-manifest.json', 'route-manifest'],
     ['static/manifest.webmanifest', 'metadata'],
