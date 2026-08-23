@@ -2,12 +2,12 @@
 
 SurfaceGuard verifies produced web build artifacts against an explicit public-surface policy. It checks what a deployment would contain instead of trusting source folders, route declarations, or framework conventions.
 
-The 0.2 series provides a framework-neutral TypeScript library and command line interface, plus Next.js and Vite adapters and a GitHub Action. It scans route manifests, client chunks, server bundles, static assets, source maps, sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
+The 0.3 series provides a framework-neutral TypeScript library and command line interface, plus Next.js and Vite adapters and a GitHub Action. It scans route manifests, client chunks, server bundles, static assets, source maps, sitemaps, and robots files. Findings are available as JSON, Markdown, or SARIF.
 
 SurfaceGuard is not published to npm. Install a released version directly from GitHub:
 
 ```sh
-npm install --save-dev github:tovellan/surfaceguard#v0.2.0
+npm install --save-dev github:tovellan/surfaceguard#v0.3.0
 ```
 
 Node.js 20 or newer is required.
@@ -92,7 +92,7 @@ The action scans an artifact after the application build. Pin a release tag or, 
   run: npm run build
 
 - name: Scan public artifacts
-  uses: tovellan/surfaceguard@v0.2.0
+  uses: tovellan/surfaceguard@v0.3.0
   with:
     artifact: .next
     policy: surfaceguard.policy.json

@@ -2,7 +2,7 @@
 
 All notable changes are recorded here. The project follows Semantic Versioning.
 
-## Unreleased
+## 0.3.0 - 2026-08-24
 
 - Added a Vite adapter for default build manifests and produced HTML entry routes.
 
