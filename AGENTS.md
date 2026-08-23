@@ -38,6 +38,7 @@ npm run check:licenses
 npm audit --audit-level=low
 npm run check:secrets
 npm run test:integration
+gitleaks git --no-banner --redact --log-opts=--all
 ```
 
 Run `npm run bench` when decoding, matching, traversal, or finding collection changes. A release also requires `npm run release:gate`, reviewed notes, a matching existing version tag, and a clean package-content inspection.

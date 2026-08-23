@@ -14,6 +14,21 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  secrets-scan:
+    name: Secrets - Gitleaks over full history
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out complete history
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Run Gitleaks
+        run: >
+          docker run --rm -v "$PWD:/repo"
+          zricethezav/gitleaks@sha256:e1b35e12a8c6fa8901f060459cfb6b2fc4c484d3afbe3b029733a3bbfab07055
+          detect --source /repo --no-banner --redact
+
   quality:
     name: Node ${{ matrix.node }}
     runs-on: ubuntu-latest
