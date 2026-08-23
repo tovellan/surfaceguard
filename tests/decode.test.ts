@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fc from 'fast-check';
 
 import { canonicalizeUrl, decodeTextVariants, repeatedlyDecodeUrl } from '../src/decode.js';
+import { parseSitemap } from '../src/sitemap.js';
 
 describe('URL decoding and canonicalization', () => {
   it('decodes repeated percent encoding with a configured bound', () => {
@@ -36,5 +37,11 @@ describe('URL decoding and canonicalization', () => {
         },
       ),
     );
+  });
+
+  it('decodes XML entities once without turning nested escapes into markup', () => {
+    const sitemap =
+      '<urlset><url><loc>https://public.example/docs?value=one&amp;lt;two&amp;next=ok</loc></url></urlset>';
+    expect(parseSitemap(sitemap, 3)).toEqual(['/docs?value=one&lt;two&next=ok']);
   });
 });
