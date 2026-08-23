@@ -105,6 +105,17 @@ export async function discoverFiles(
       }
       if (!stat.isFile()) continue;
 
+      if (stat.size > limits.maxFileBytes) {
+        throw new SurfaceGuardError(
+          'SG_RESOURCE_LIMIT',
+          'Artifact file exceeds maxFileBytes',
+          {
+            artifactPath: relativePath,
+            limit: limits.maxFileBytes,
+            observed: stat.size,
+          },
+        );
+      }
       if (files.length + 1 > limits.maxFiles) {
         throw new SurfaceGuardError(
           'SG_RESOURCE_LIMIT',

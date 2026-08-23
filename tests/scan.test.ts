@@ -85,7 +85,7 @@ describe('artifact scanning', () => {
     ).rejects.toMatchObject({
       code: 'SG_ROOT_INVALID',
     });
-    await writeFile(join(root, 'large.js'), '0123456789', 'utf8');
+    await writeFile(join(root, 'large.bin'), '0123456789', 'utf8');
     await expect(
       scanArtifacts({
         root,
