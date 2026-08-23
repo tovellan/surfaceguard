@@ -1015,14 +1015,17 @@ function safeRegex(rule, limits) {
   }
 }
 function* literalMatches(text, pattern, caseSensitive) {
-  const haystack = caseSensitive ? text : text.toLocaleLowerCase("en-US");
-  const needle = caseSensitive ? pattern : pattern.toLocaleLowerCase("en-US");
+  if (!caseSensitive) {
+    const escaped = pattern.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
+    yield* regexMatches(text, new RegExp(escaped, "giu"));
+    return;
+  }
   let offset = 0;
-  while (needle.length > 0) {
-    const index = haystack.indexOf(needle, offset);
+  while (pattern.length > 0) {
+    const index = text.indexOf(pattern, offset);
     if (index < 0) break;
-    yield [index, needle.length];
-    offset = index + Math.max(1, needle.length);
+    yield [index, pattern.length];
+    offset = index + Math.max(1, pattern.length);
   }
 }
 function* regexMatches(text, regex) {
