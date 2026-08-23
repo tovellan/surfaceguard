@@ -2,7 +2,7 @@
 
 All notable changes are recorded here. The project follows Semantic Versioning.
 
-## Unreleased
+## 0.2.0 - 2026-08-24
 
 - Bounded repeated literal and regular expression matching before collecting findings.
 - Enforced the individual file-size limit before artifact classification.
@@ -13,6 +13,7 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 - Rejected unsupported compressed sitemaps when a sitemap is required.
 - Aligned file-rule message validation with the published policy schema.
 - Normalized Next.js App Router manifest paths to their public route forms.
+- Aligned release-note lookup with the versioned release-note filenames.
 
 ## 0.1.1 - 2026-08-24
 

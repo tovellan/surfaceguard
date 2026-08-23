@@ -1,6 +1,6 @@
 {
   "name": "@tovellan/surfaceguard",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Policy-driven scanner for public web build artifacts",
   "type": "module",
   "license": "Apache-2.0",
