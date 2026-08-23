@@ -11,7 +11,7 @@ Security fixes are provided for the latest minor release. Before version 1.0, in
 
 ## Reporting a vulnerability
 
-Use the repository's private vulnerability reporting feature under the Security tab. Do not open a regular issue for a possible vulnerability or include sensitive artifact evidence in a report.
+Use the repository's private vulnerability reporting feature under the Security tab. Do not open a public issue for a possible vulnerability or include sensitive artifact evidence in a public report.
 
 Include the affected version, operating system, Node.js version, policy, minimal synthetic artifact, observed result, and expected result. Remove credentials and private application material.
 
