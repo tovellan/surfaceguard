@@ -166,6 +166,24 @@ describe('artifact scanning', () => {
     expect(finding?.location?.offset).toBe(2);
   });
 
+  it('keeps case-insensitive literal evidence aligned after Unicode folding', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'surfaceguard-case-fold-'));
+    temporary.push(root);
+    await writeFile(join(root, 'bundle.js'), 'İSECRET', 'utf8');
+    const result = await scanArtifacts({
+      root,
+      policy: {
+        schemaVersion: 1,
+        forbidden: {
+          text: [{ id: 'case-folded-copy', pattern: 'secret', caseSensitive: false }],
+        },
+      },
+    });
+    const finding = result.findings.find((item) => item.ruleId === 'case-folded-copy');
+    expect(finding).toMatchObject({ evidence: 'SECRET' });
+    expect(finding?.location?.offset).toBe(1);
+  });
+
   it('rejects adversarial nested-quantifier regular expressions', async () => {
     const root = await mkdtemp(join(tmpdir(), 'surfaceguard-regex-'));
     temporary.push(root);

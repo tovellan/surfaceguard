@@ -6,6 +6,7 @@ All notable changes are recorded here. The project follows Semantic Versioning.
 
 - Bounded repeated literal and regular expression matching before collecting findings.
 - Preserved raw evidence spans when artifact text contains astral Unicode characters.
+- Kept case-insensitive literal evidence aligned when Unicode folding changes length.
 - Rejected unsupported compressed sitemaps when a sitemap is required.
 - Aligned file-rule message validation with the published policy schema.
 
