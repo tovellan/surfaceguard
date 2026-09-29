@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   build:
-    if: ${{ inputs.confirm && github.ref == 'refs/heads/main' }}
+    if: ${{ inputs.confirm && github.ref == 'refs/heads/main' && github.workflow_ref == 'tovellan/surfaceguard/.github/workflows/release.yml@refs/heads/main' }}
     runs-on: ubuntu-latest
     outputs:
       publish_script_sha256: ${{ steps.publish-script.outputs.sha256 }}
@@ -103,6 +103,7 @@ jobs:
 
   publish:
     needs: build
+    if: ${{ inputs.confirm && github.ref == 'refs/heads/main' && github.workflow_ref == 'tovellan/surfaceguard/.github/workflows/release.yml@refs/heads/main' }}
     runs-on: ubuntu-latest
     environment: release
     permissions:
