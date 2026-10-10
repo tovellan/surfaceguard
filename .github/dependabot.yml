@@ -16,6 +16,13 @@ updates:
       - dependency-name: '@types/node'
         update-types:
           - version-update:semver-major
+      # Vitest 5 drops the supported Node 20 runtime. Keep paired major upgrades deliberate.
+      - dependency-name: vitest
+        update-types:
+          - version-update:semver-major
+      - dependency-name: '@vitest/coverage-v8'
+        update-types:
+          - version-update:semver-major
   - package-ecosystem: github-actions
     directory: /
     schedule:
